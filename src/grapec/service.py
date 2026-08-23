@@ -14,7 +14,9 @@ The base classes own ``__init__`` and keep no public attributes, so method
 names never clash with grapec internals. Calls accept ``timeout``,
 ``metadata`` and ``compression`` keyword arguments at runtime. Methods
 may take several parameters and return scalars for protocols that allow it
-(thrift), gRPC methods take one struct and return one struct. Declare
+(thrift), gRPC methods take one struct and return one struct. A return
+annotation of ``tuple[T, grapec.Metadata]`` (in either order) makes the
+call return the response metadata next to the value. Declare
 ``**options: Unpack[grapec.CallOptions]`` on a method if you want type
 checkers to know about them. Closing goes through ``grapec.close``.
 """
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from typing import Any, Callable, TypedDict, TypeVar, get_type_hints
+from typing import Any, Callable, TypedDict, TypeVar, get_args, get_origin, get_type_hints
 
 from .schema import Id, ListType, MapType, SchemaError, StructType, TypeSpec, apply_width, is_struct, resolve_type, split_annotated, split_optional
 from .struct import _PACKAGE_RE
@@ -39,21 +41,30 @@ _SESSION_ATTR = "__grapec_session__"
 _OWNED_ATTR = "__grapec_owns_session__"
 
 
-class CallDetails:
-    """Response metadata of one call, pass an instance as ``details=`` to receive it.
+class Metadata:
+    """Response metadata of one call.
 
-    ``headers`` and ``trailers`` are filled after the call returned or raised
-    ``RpcError``. Binary values (``-bin`` keys) are ``bytes``.
+    Returned next to the value when a method is annotated with
+    ``-> tuple[T, grapec.Metadata]``. ``headers`` and ``trailers`` are the
+    metadata the server sent, binary values (``-bin`` keys) are ``bytes``.
+    Thrift fills ``headers`` only with a transport that carries them.
     """
 
     __slots__ = ("headers", "trailers")
 
-    def __init__(self) -> None:
-        self.headers: dict[str, str | bytes] = {}
-        self.trailers: dict[str, str | bytes] = {}
+    def __init__(self, headers: dict[str, str | bytes] | None = None, trailers: dict[str, str | bytes] | None = None) -> None:
+        self.headers: dict[str, str | bytes] = dict(headers or {})
+        self.trailers: dict[str, str | bytes] = dict(trailers or {})
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Metadata):
+            return NotImplemented
+        return self.headers == other.headers and self.trailers == other.trailers
+
+    __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return f"CallDetails(headers={self.headers!r}, trailers={self.trailers!r})"
+        return f"Metadata(headers={self.headers!r}, trailers={self.trailers!r})"
 
 
 class CallOptions(TypedDict, total=False):
@@ -62,7 +73,6 @@ class CallOptions(TypedDict, total=False):
     timeout: float | None
     metadata: dict[str, str | bytes] | None
     compression: str | None
-    details: CallDetails | None
 
 
 _OPTION_KEYS = frozenset(CallOptions.__annotations__)
@@ -94,7 +104,9 @@ class MethodSpec:
 
     ``returns`` is ``None`` for ``-> None`` (a thrift ``void``). ``raises``
     holds ``(field id, class)`` pairs of the declared exception structs, the
-    ids are the thrift result field ids.
+    ids are the thrift result field ids. ``layout`` is ``None`` when the call
+    returns the value itself, otherwise the members of the declared return
+    tuple in order, each ``"value"`` or ``"metadata"``.
     """
 
     service: ServiceSpec
@@ -104,6 +116,13 @@ class MethodSpec:
     raises: tuple[tuple[int, type], ...]
     python_name: str
     signature: inspect.Signature
+    layout: tuple[str, ...] | None = None
+
+    def result(self, value: Any, metadata: Metadata) -> Any:
+        """Shape the decoded value the way the method was declared."""
+        if self.layout is None:
+            return value
+        return tuple(value if item == "value" else metadata for item in self.layout)
 
     @property
     def path(self) -> str:
@@ -327,11 +346,44 @@ def _build_method(svc: ServiceSpec, attr: str, func: Callable[..., Any]) -> Meth
         specs.append(ParamSpec(param.name, number, spec, optional))
     if "return" not in hints:
         raise SchemaError(f"{where}: missing return annotation, use `-> None` for no result")
-    ret = hints["return"]
+    ret, layout = _split_return(hints["return"], where)
     returns = None if ret is type(None) else resolve_type(ret, where=f"{where} return")
     wire_name = getattr(func, NAME_ATTR, attr)
     signature = inspect.Signature([p.replace(kind=inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=inspect.Parameter.empty) for p in params])
-    return MethodSpec(svc, wire_name, tuple(specs), returns, getattr(func, RAISES_ATTR, ()), attr, signature)
+    return MethodSpec(svc, wire_name, tuple(specs), returns, getattr(func, RAISES_ATTR, ()), attr, signature, layout)
+
+
+_MISSING = object()
+
+
+def _split_return(ret: Any, where: str) -> tuple[Any, tuple[str, ...] | None]:
+    """``(value annotation, layout)`` of a return annotation, see ``MethodSpec.layout``.
+
+    A tuple return lists the value type and ``grapec.Metadata`` in any
+    order. A bare ``tuple`` is not a wire type, so there is no ambiguity.
+    """
+    if ret is Metadata:
+        raise SchemaError(f"{where}: return Metadata next to the value, `-> tuple[T, grapec.Metadata]`")
+    if get_origin(ret) is not tuple:
+        return ret, None
+    members = get_args(ret)
+    if not members or Ellipsis in members:
+        raise SchemaError(f"{where}: a tuple return must list its members, `-> tuple[T, grapec.Metadata]`")
+    value: Any = _MISSING
+    layout: list[str] = []
+    for member in members:
+        if member is Metadata:
+            if "metadata" in layout:
+                raise SchemaError(f"{where}: Metadata listed twice in the return tuple")
+            layout.append("metadata")
+        elif value is _MISSING:
+            value = type(None) if member is None else member  # `tuple[None, ...]` keeps a bare None
+            layout.append("value")
+        else:
+            raise SchemaError(f"{where}: a return tuple holds one value and grapec.Metadata, nothing else")
+    if value is _MISSING:
+        raise SchemaError(f"{where}: the return tuple needs the value type, `-> tuple[T, grapec.Metadata]`")
+    return value, tuple(layout)
 
 
 def remote_methods(cls: type) -> dict[str, _RemoteMethod]:

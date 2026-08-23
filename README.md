@@ -90,7 +90,7 @@ reply.to_json()                              # proto3 JSON mapping
 print(grapec.export_proto(Greeter))          # the .proto for the other side
 ```
 
-Field numbers follow declaration order, `Annotated[int, grapec.Id(7)]` pins one. The URL scheme picks the transport, `grpc://`, `grpcs://`, `thrift://` or `thrifts://`. Connections are pooled per client, calls accept `timeout=`, `metadata=` and `compression=`. For asyncio, subclass `grapec.AsyncClient` and declare the methods with `async def`.
+Field numbers follow declaration order, `Annotated[int, grapec.Id(7)]` pins one. The URL scheme picks the transport, `grpc://`, `grpcs://`, `thrift://` or `thrifts://`. Connections are pooled per client, calls accept `timeout=`, `metadata=` and `compression=`, and a method annotated `-> tuple[Reply, grapec.Metadata]` returns the response headers and trailers next to the reply. For asyncio, subclass `grapec.AsyncClient` and declare the methods with `async def`.
 
 The same structs work with thrift. Methods may take several parameters, return scalars and declare the exceptions they throw:
 

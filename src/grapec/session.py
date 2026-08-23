@@ -16,7 +16,7 @@ from .errors import RpcError, Status
 from .wire import WireError
 from .pool import Pool
 from .schema import SchemaError
-from .service import CallDetails, MethodSpec, method_of, remote_methods
+from .service import Metadata as ResponseMetadata, MethodSpec, method_of, remote_methods
 
 Req = TypeVar("Req")
 Resp = TypeVar("Resp")
@@ -290,12 +290,6 @@ def _exhausted(timeout: float | None) -> RpcError:
     return RpcError(Status.RESOURCE_EXHAUSTED, f"no connection available within {timeout}s, the pool is at max_conns")
 
 
-def _record(details: CallDetails | None, headers: Metadata, trailers: Metadata) -> None:
-    if details is not None:
-        details.headers = headers
-        details.trailers = trailers
-
-
 class Session(_BaseSession):
     """Owns pooled connections to one server.
 
@@ -356,25 +350,21 @@ class Session(_BaseSession):
         timeout: float | None = INHERIT,
         metadata: Metadata | None = None,
         compression: str | None = INHERIT,
-        details: CallDetails | None = None,
         **kwargs: Any,
     ) -> Resp:
         """Invoke ``method`` (for example ``Greeter.say_hello``) with its arguments.
 
         Works with methods of both ``Client`` and ``AsyncClient`` subclasses.
-        ``details`` receives the response headers and trailers.
+        The result follows the method's return annotation, so a method
+        declared ``-> tuple[T, grapec.Metadata]`` returns that tuple.
         """
         spec, path, payload, timeout, compression = self._prepare(method, args, kwargs, timeout, metadata, compression)
         conn = self._acquire()
         try:
             raw, headers, trailers = conn.unary(path, payload, timeout=timeout, metadata=metadata, compression=compression)
-        except RpcError as exc:
-            _record(details, exc.headers, exc.trailers)
-            raise
         finally:
             self._release(conn)
-        _record(details, headers, trailers)
-        return self._protocol.decode(spec, raw)  # type: ignore[no-any-return]
+        return spec.result(self._protocol.decode(spec, raw), ResponseMetadata(headers, trailers))  # type: ignore[no-any-return]
 
     def close(self) -> None:
         for conn in self._pool.drain():
@@ -467,20 +457,15 @@ class AsyncSession(_BaseSession):
         timeout: float | None = INHERIT,
         metadata: Metadata | None = None,
         compression: str | None = INHERIT,
-        details: CallDetails | None = None,
         **kwargs: Any,
     ) -> Resp:
         spec, path, payload, timeout, compression = self._prepare(method, args, kwargs, timeout, metadata, compression)
         conn = await self._acquire()
         try:
             raw, headers, trailers = await conn.unary(path, payload, timeout=timeout, metadata=metadata, compression=compression)
-        except RpcError as exc:
-            _record(details, exc.headers, exc.trailers)
-            raise
         finally:
             await self._release(conn)
-        _record(details, headers, trailers)
-        return self._protocol.decode(spec, raw)  # type: ignore[no-any-return]
+        return spec.result(self._protocol.decode(spec, raw), ResponseMetadata(headers, trailers))  # type: ignore[no-any-return]
 
     async def aclose(self) -> None:
         for conn in self._pool.drain():
