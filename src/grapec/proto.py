@@ -76,6 +76,12 @@ def export_proto(*roots: type) -> str:
                 spec = value.spec
                 if spec.unary_struct is None:
                     raise SchemaError(f"{spec.service.cls.__qualname__}.{spec.python_name}: only methods with one struct parameter and a struct return can be exported to proto")
+                twin = next((m for m in methods if m.service is svc and m.name == spec.name), None)
+                if twin is not None:
+                    # the same wire method declared again, for example with a Metadata return
+                    if twin.unary_struct != spec.unary_struct:
+                        raise SchemaError(f"{svc.cls.__qualname__}: {twin.python_name} and {spec.python_name} both declare {spec.name} with different types")
+                    continue
                 methods.append(spec)
                 for cls in spec.unary_struct:
                     visit_struct(cls)

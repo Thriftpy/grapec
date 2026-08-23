@@ -29,14 +29,12 @@ reply = greeter.say_hello(req)
 print(reply)
 
 # request headers, response trailers, request compression
-details = grapec.CallDetails()
-reply = greeter.say_hello(
+reply, meta = greeter.say_hello_with_metadata(
     HelloRequest(name="tenant user", payload="a oneof string member"),
     metadata={"x-tenant": "acme"},
     compression="gzip",
-    details=details,
 )
-print(reply.extra["tenant"], "request id", details.trailers["x-request-id"])
+print(reply.extra["tenant"], "request id", meta.trailers["x-request-id"])
 
 try:
     greeter.say_hello(HelloRequest(name="", trace_id="x"), timeout=1)

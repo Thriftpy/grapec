@@ -51,6 +51,10 @@ class Greeter(grapec.Client, package="example.hello.v1"):
     @grapec.name("SayHello")
     def say_hello(self, request: HelloRequest) -> HelloReply: ...
 
+    # same wire method, declared to also hand back the response metadata
+    @grapec.name("SayHello")
+    def say_hello_with_metadata(self, request: HelloRequest) -> tuple[HelloReply, grapec.Metadata]: ...
+
 
 class Stats(grapec.Client, package="example.hello.v1"):
     @grapec.name("Count")

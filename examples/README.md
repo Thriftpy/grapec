@@ -5,7 +5,7 @@ Two of them need nothing but a network connection, run them first.
 | File | Needs | Shows |
 | --- | --- | --- |
 | [eliza.py](eliza.py) | network | the smallest possible client, one public gRPC service over TLS |
-| [grpcbin.py](grpcbin.py) | network | a shared `Session` across services, nested and repeated fields, metadata, `CallDetails`, `RpcError`, plaintext and TLS, an async client |
+| [grpcbin.py](grpcbin.py) | network | a shared `Session` across services, nested and repeated fields, metadata, a `Metadata` return, `RpcError`, plaintext and TLS, an async client |
 | [grpc/](grpc) | `grpcio`, `grpcio-tools` | every supported proto type against a local grpcio server: enums, maps, oneof, `Timestamp`, `Duration`, `bytes`, explicit field ids, compression, `export_proto` |
 | [thrift/](thrift) | `thriftpy2` | a local thrift server: multi parameter methods, `i32` widths, optional fields, declared and undeclared exceptions |
 

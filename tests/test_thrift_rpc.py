@@ -48,6 +48,12 @@ class Store(grapec.Client, package="rpc"):
 
     def echo_opt(self, n: Annotated[int, I32] | None) -> Annotated[int, I32]: ...
 
+    @grapec.name("get")
+    def get_with_metadata(self, key: str, limit: Annotated[int, I32]) -> tuple[Item, grapec.Metadata]: ...
+
+    @grapec.name("put")
+    def put_with_metadata(self, item: Item) -> tuple[None, grapec.Metadata]: ...
+
     @grapec.raises(NotFound, Annotated[Busy, grapec.Id(5)])
     def pinned(self, key: str) -> Item: ...
 
@@ -145,11 +151,13 @@ def test_argument_errors(store):
     assert store.total() == 1 << 40
 
 
-def test_session_call_and_details(store):
+def test_session_call_and_response_metadata(store):
     session = grapec.session_of(store)
-    details = grapec.CallDetails()
-    assert session.call(Store.get, "k", 2, details=details).count == 2
-    assert details.headers == {} and details.trailers == {}
+    assert session.call(Store.get, "k", 2).count == 2
+    item, meta = store.get_with_metadata("k", 2)
+    assert item.count == 2
+    assert meta == grapec.Metadata()  # framed transport carries no headers
+    assert store.put_with_metadata(Item(key="m", count=1)) == (None, grapec.Metadata())
 
 
 def test_grpc_only_shapes_are_rejected_for_thrift(thrift_server):

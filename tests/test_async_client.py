@@ -14,6 +14,9 @@ class AsyncGreeter(grapec.AsyncClient, package="test.rpc", name="Greeter"):
     @grapec.name("SayHello")
     async def say_hello(self, request: HelloRequest) -> HelloReply: ...
 
+    @grapec.name("SayHello")
+    async def say_hello_with_metadata(self, request: HelloRequest) -> tuple[HelloReply, grapec.Metadata]: ...
+
     @grapec.name("Fail")
     async def fail(self, request: HelloRequest) -> HelloReply: ...
 
@@ -213,11 +216,11 @@ async def test_stale_connection_after_goaway_is_dropped(serve):
     await grapec.aclose(g)
 
 
-async def test_call_details_and_error_metadata(greeter):
-    details = grapec.CallDetails()
-    await greeter.say_hello(HelloRequest(name="d"), details=details)
-    assert details.headers["x-initial"] == "yes"
-    assert details.trailers["x-echo"] == "d"
+async def test_response_metadata_and_error_metadata(greeter):
+    reply, meta = await greeter.say_hello_with_metadata(HelloRequest(name="d"))
+    assert reply.message == "hello d 0"
+    assert meta.headers["x-initial"] == "yes"
+    assert meta.trailers["x-echo"] == "d"
     with pytest.raises(grapec.RpcError) as info:
         await greeter.fail(HelloRequest(name="e"))
     assert info.value.trailers["x-reason"] == "test"

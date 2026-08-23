@@ -26,6 +26,12 @@ class Greeter(grapec.Client, package="test.rpc"):
     def say_hello(self, request: HelloRequest, **options: Unpack[grapec.CallOptions]) -> HelloReply:
         """Say hello."""
 
+    @grapec.name("SayHello")
+    def say_hello_with_metadata(self, request: HelloRequest) -> tuple[HelloReply, grapec.Metadata]: ...
+
+    @grapec.name("SayHello")
+    def metadata_then_reply(self, request: HelloRequest) -> tuple[grapec.Metadata, HelloReply]: ...
+
     @grapec.name("Fail")
     def fail(self, request: HelloRequest) -> HelloReply: ...
 
@@ -444,25 +450,60 @@ def test_max_idle_time_evicts_old_connections(url):
     grapec.close(g)
 
 
-def test_call_details_and_error_metadata(greeter):
-    details = grapec.CallDetails()
-    greeter.say_hello(HelloRequest(name="d"), details=details)
-    assert details.headers["x-initial"] == "yes"
-    assert details.trailers["x-echo"] == "d"
-    assert details.trailers["x-raw-bin"] == b"\x01\x02"
-    assert ":status" not in details.headers and "grpc-status" not in details.trailers
+def test_response_metadata_and_error_metadata(greeter):
+    reply, meta = greeter.say_hello_with_metadata(HelloRequest(name="d"))
+    assert reply.message == "hello d 0"
+    assert isinstance(meta, grapec.Metadata)
+    assert meta.headers["x-initial"] == "yes"
+    assert meta.trailers["x-echo"] == "d"
+    assert meta.trailers["x-raw-bin"] == b"\x01\x02"
+    assert ":status" not in meta.headers and "grpc-status" not in meta.trailers
 
-    details = grapec.CallDetails()
+    meta2, reply2 = greeter.metadata_then_reply(HelloRequest(name="d"))
+    assert reply2 == reply and meta2 == meta
+
     with pytest.raises(grapec.RpcError) as info:
-        greeter.fail(HelloRequest(name="e"), details=details)
+        greeter.fail(HelloRequest(name="e"))
     assert info.value.trailers["x-reason"] == "test"
-    assert details.trailers == info.value.trailers
     assert "grpc-message" not in info.value.trailers
 
     with grapec.Session(grapec.session_of(greeter).url) as session:
-        details = grapec.CallDetails()
-        session.call(Greeter.say_hello, HelloRequest(name="s"), details=details)
-        assert details.trailers["x-echo"] == "s"
+        _, meta = session.call(Greeter.say_hello_with_metadata, HelloRequest(name="s"))
+        assert meta.trailers["x-echo"] == "s"
+
+
+def test_return_tuple_shapes_are_checked():
+    with pytest.raises(grapec.SchemaError, match="next to the value"):
+
+        class Bare(grapec.Client, package="test.rpc"):
+            def m(self, request: HelloRequest) -> grapec.Metadata: ...
+
+    with pytest.raises(grapec.SchemaError, match="needs the value type"):
+
+        class NoValue(grapec.Client, package="test.rpc"):
+            def m(self, request: HelloRequest) -> tuple[grapec.Metadata]: ...
+
+    with pytest.raises(grapec.SchemaError, match="nothing else"):
+
+        class TwoValues(grapec.Client, package="test.rpc"):
+            def m(self, request: HelloRequest) -> tuple[HelloReply, HelloReply, grapec.Metadata]: ...
+
+    with pytest.raises(grapec.SchemaError, match="listed twice"):
+
+        class TwoMeta(grapec.Client, package="test.rpc"):
+            def m(self, request: HelloRequest) -> tuple[grapec.Metadata, HelloReply, grapec.Metadata]: ...
+
+    with pytest.raises(grapec.SchemaError, match="list its members"):
+
+        class Variadic(grapec.Client, package="test.rpc"):
+            def m(self, request: HelloRequest) -> tuple[HelloReply, ...]: ...
+
+    with pytest.raises(grapec.SchemaError, match="gRPC methods take exactly one struct"):
+
+        class Scalar(grapec.Client, package="test.rpc"):
+            def m(self, request: HelloRequest) -> tuple[int, grapec.Metadata]: ...
+
+        Scalar("grpc://localhost:1")
 
 
 def test_bound_methods_are_usable_with_session_call(greeter):

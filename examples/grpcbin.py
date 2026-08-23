@@ -84,7 +84,7 @@ class GRPCBin(grapec.Client, package="grpcbin"):
     def dummy_unary(self, request: DummyMessage) -> DummyMessage: ...
 
     @grapec.name("HeadersUnary")
-    def headers_unary(self, request: EmptyMessage) -> HeadersMessage: ...
+    def headers_unary(self, request: EmptyMessage) -> tuple[HeadersMessage, grapec.Metadata]: ...
 
     @grapec.name("SpecificError")
     def specific_error(self, request: SpecificErrorRequest) -> EmptyMessage: ...
@@ -129,10 +129,9 @@ echo = grpcbin.dummy_unary(
 )
 print(echo.f_sub, echo.f_enum.name, echo.f_bytes)
 
-# request metadata comes back in the reply, response headers land in CallDetails
-details = grapec.CallDetails()
-headers = grpcbin.headers_unary(EmptyMessage(), metadata={"x-demo": "grapec"}, details=details)
-print("server saw x-demo =", headers.metadata["x-demo"].values, "and answered with", dict(details.headers))
+# request metadata comes back in the reply, the tuple return carries the response headers
+headers, meta = grpcbin.headers_unary(EmptyMessage(), metadata={"x-demo": "grapec"})
+print("server saw x-demo =", headers.metadata["x-demo"].values, "and answered with", meta.headers)
 
 # ask for a specific status code
 try:

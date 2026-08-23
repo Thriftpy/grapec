@@ -150,7 +150,7 @@ greeter = Greeter("grpc://localhost:50051", timeout=5)
 - Subclass `grapec.Client` with a `package=` class argument and declare the methods with `def`. Bodies are never executed, `...` is enough.
 - Names are used as is on the wire, nothing is converted between snake_case and PascalCase. `@grapec.name("SayHello")` on a method or `name="Greeter"` next to `package=` pick a different wire name.
 - The method shape depends on the protocol. gRPC methods take one struct and return a struct. Thrift methods may take several parameters of any supported type and return a scalar, container, struct or `None`. A shape the protocol cannot carry is rejected with `SchemaError` when the client is constructed, so one class can serve both protocols as long as its methods fit.
-- Parameter names never reach the wire, but they must not be named like a call option (`timeout`, `metadata`, `compression`, `details`), that is rejected at class definition.
+- Parameter names never reach the wire, but they must not be named like a call option (`timeout`, `metadata`, `compression`), that is rejected at class definition.
 - `Client` has no public attributes of its own, so method names cannot clash with it. Helpers live at module level: `grapec.close(client)`, `grapec.aclose(client)`, `grapec.session_of(client)`.
 - Subclassing a client class inherits its methods. Pass `name=` on the subclass to call the inherited methods under the new service name, without it they keep the parent's paths.
 
@@ -159,18 +159,21 @@ greeter = Greeter("grpc://localhost:50051", timeout=5)
 ```python
 reply = greeter.say_hello(req, timeout=2, metadata={"x-tenant": "acme"})
 
-d = grapec.CallDetails()
-greeter.say_hello(req, details=d)
-d.trailers["x-request-id"]
+class Greeter(grapec.Client, package="example.hello.v1"):
+    @grapec.name("SayHello")
+    def say_hello_with_metadata(self, request: HelloRequest) -> tuple[HelloReply, grapec.Metadata]: ...
+
+reply, meta = greeter.say_hello_with_metadata(req)
+meta.trailers["x-request-id"]
 ```
 
 - Calls accept positional and keyword arguments like a normal Python call.
-- Every method also accepts `timeout=`, `metadata=`, `compression=` and `details=` keyword arguments. Declare `**options: Unpack[grapec.CallOptions]` on a method if you want type checkers to see them.
+- Every method also accepts `timeout=`, `metadata=` and `compression=` keyword arguments. Declare `**options: Unpack[grapec.CallOptions]` on a method if you want type checkers to see them.
 - `timeout` is in seconds and overrides the client's default, an explicit `timeout=None` disables it for that call. Expiry raises `RpcError` with `Status.DEADLINE_EXCEEDED`. The deadline covers sending the request and reading the reply on a connection, it does not include waiting for a pooled connection (`pool_timeout`) or establishing a new one (`connect_timeout`), so a call can take up to the sum of the three. Likewise `compression=None` sends that call uncompressed even when the client sets a default.
 - `metadata` is a dict of request headers. Binary values must be `bytes` under a key ending in `-bin`.
 - `compression` is `"gzip"` or `"deflate"` and compresses the request. Compressed responses are always accepted.
-- `details` takes a `grapec.CallDetails()` and fills its `headers` and `trailers` dicts after the call returned or raised `RpcError`. Binary values (`-bin` keys) come back as `bytes`.
-- `metadata`, `compression` and `details` are gRPC concepts, see [Thrift](#thrift) for what happens there.
+- To receive response metadata, annotate the return type as a tuple of the value type and `grapec.Metadata`, in either order. The call then returns that tuple. `Metadata` has `headers` and `trailers` dicts, binary values (`-bin` keys) come back as `bytes`. The same wire method can be declared twice under different Python names (`@grapec.name`) if you want both shapes. A tuple is never a wire type, so the annotation is unambiguous. On `RpcError` the metadata is on the exception instead.
+- `metadata` and `compression` are gRPC concepts, see [Thrift](#thrift) for what happens there.
 
 ### Sessions and pooling
 
@@ -196,7 +199,7 @@ session.close()
 ```
 
 - `grapec.close(client)` closes the session a client created from a URL and leaves a shared session alone. Garbage collection closes owned sessions as a fallback. `grapec.session_of(client)` returns the session behind a client.
-- `session.call(Greeter.say_hello, request, ..., timeout=, metadata=, compression=, details=)` is the low level entry point. It takes the unbound method, then the method's arguments, and works with methods of both sync and async declared clients.
+- `session.call(Greeter.say_hello, request, ..., timeout=, metadata=, compression=)` is the low level entry point. It returns what the method's annotation says, a tuple for `-> tuple[T, grapec.Metadata]`. It takes the unbound method, then the method's arguments, and works with methods of both sync and async declared clients.
 
 ### asyncio
 
@@ -231,7 +234,7 @@ Declared thrift exceptions are raised as themselves, see [Thrift](#thrift).
 `grpc://` and `grpcs://` speak gRPC over HTTP/2 with protobuf payloads. Unary calls only, streaming is not implemented yet.
 
 - Methods take exactly one struct and return one struct. The request class is checked at call time.
-- Request headers from `metadata=` and response headers and trailers through `details=` are passed as is. For a trailers-only response everything is reported as trailers, like other gRPC clients do.
+- Request headers from `metadata=` and response headers and trailers in `grapec.Metadata` are passed as is. For a trailers-only response everything is reported as trailers, like other gRPC clients do.
 - An expired deadline cancels the stream with `RST_STREAM` and keeps the connection.
 - `gzip` and `deflate` are available for `compression`.
 
@@ -310,7 +313,7 @@ Methods:
 - `@grapec.raises(A, B)` lists the exception structs a method may raise, each a `@grapec.struct` that subclasses `Exception`. They take result field ids 1, 2, ... in that order, `Annotated[B, grapec.Id(5)]` pins one. Duplicate classes or ids are rejected. A server side exception the client did not declare surfaces as `RpcError` with `Status.UNKNOWN`. gRPC sessions ignore `@raises`.
 - Exception structs compare and hash by value, pickle, and must not use field names that `BaseException` owns (`args`, `add_note`, ...).
 - `TApplicationException` replies become `RpcError`: `UNKNOWN_METHOD` maps to `Status.UNIMPLEMENTED`, protocol level failures to `Status.INTERNAL`. A reply that cannot be decoded raises `RpcError` with `Status.INTERNAL` as well and the connection is kept, because the frame boundary was intact.
-- `metadata=` and `compression=` raise `TypeError`, thrift has no headers. `details=` stays empty. An expired deadline drops the connection, thrift cannot cancel a call in flight.
+- `metadata=` and `compression=` raise `TypeError`, the framed transport has no headers. A `grapec.Metadata` in the return tuple comes back empty. An expired deadline drops the connection, thrift cannot cancel a call in flight.
 - One session carries the multiplexed service name from its URL, so clients of two multiplexed services need two sessions.
 
 Structs:
