@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import sys
 from typing import Any, Callable, TypeVar, dataclass_transform, get_type_hints
+
+if sys.version_info >= (3, 14):
+    import annotationlib
 
 from . import dict as _dict
 from . import protobuf as _protobuf
@@ -17,6 +21,18 @@ _PACKAGE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _STRING_LIST = re.compile(r"^(typing\.)?(List|list)\[")
 _STRING_DICT = re.compile(r"^(typing\.)?(Dict|dict)\[")
 _STRING_OPTIONAL = re.compile(r"(^(typing\.)?Optional\[)|(\|\s*None\s*$)|(^None\s*\|)")
+
+
+def _own_annotations(cls: type) -> dict[str, Any]:
+    """The class's own annotations, not inherited ones.
+
+    Under PEP 649 (3.14+) annotations are lazily evaluated and absent from
+    ``__dict__``; the STRING format matches what ``_classify_string`` parses
+    and never fails on forward references.
+    """
+    if sys.version_info >= (3, 14):
+        return annotationlib.get_annotations(cls, format=annotationlib.Format.STRING)
+    return cls.__dict__.get("__annotations__", {})
 
 
 @dataclass_transform(kw_only_default=True)
@@ -37,7 +53,7 @@ def struct(*, package: str) -> Callable[[type[T]], type[T]]:
         _inject_defaults(cls)
         is_exception = issubclass(cls, BaseException)
         if is_exception:
-            for attr in cls.__dict__.get("__annotations__", {}):
+            for attr in _own_annotations(cls):
                 if hasattr(BaseException, attr):
                     raise SchemaError(f"{cls.__qualname__}.{attr}: field name is taken by BaseException, rename it")
         # exception structs (thrift `exception`) are raised and caught like any other,
@@ -97,7 +113,7 @@ def _inject_defaults(cls: type) -> None:
 
     Everything else stays required, like a regular dataclass.
     """
-    annotations = cls.__dict__.get("__annotations__", {})
+    annotations = _own_annotations(cls)
     try:
         hints: dict[str, Any] | None = get_type_hints(
             cls, include_extras=True, localns={cls.__name__: cls}
