@@ -187,6 +187,20 @@ def test_body_past_its_length_prefix_is_bounded():
     assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
 
 
+def test_repeated_and_folded_metadata():
+    client, server = _pair()
+    sid = _start_call(client, server)
+    _reply(
+        server,
+        sid,
+        trailers=(("grpc-status", "0"), ("x-t", "a"), ("x-t", "b"), ("x-b-bin", "AQ==,Ag"), ("x-b-bin", "Aw==")),
+    )
+    client.feed(server.data_to_send())
+    _, _, trailers = client.result()
+    assert trailers.get_all("x-t") == ["a", "b"]
+    assert trailers.get_all("x-b-bin") == [b"\x01", b"\x02", b"\x03"]
+
+
 def test_receive_window_is_raised():
     client, server = _pair()
     assert server.remote_settings.initial_window_size == 4 * 1024 * 1024

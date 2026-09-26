@@ -632,3 +632,30 @@ def test_max_receive_size_is_validated(url):
     with pytest.raises(ValueError, match="max_receive_size"):
         grapec.Session(url, max_receive_size=0)
 
+
+def test_repeated_metadata_keys(greeter):
+    reply, meta = greeter.say_hello_with_metadata(HelloRequest(name="d"))
+    assert isinstance(meta.headers, grapec.Headers)
+    assert meta.headers["x-dup"] == "1"
+    assert meta.headers.get_all("x-dup") == ["1", "2"]
+    assert meta.trailers.get_all("x-dup-bin") == [b"\x01", b"\x02"]
+    assert meta.trailers.get_all("x-absent") == []
+
+    reply = greeter.say_hello(HelloRequest(name="m"), metadata=[("x-t", "a"), ("x-t", "b"), ("x-b-bin", b"\x01")])
+    assert reply.metadata["x-t"] == "a,b"
+    assert reply.metadata["x-b-bin"] == "01"
+    # response metadata can be forwarded as is, every value included
+    reply = greeter.say_hello(HelloRequest(name="m"), metadata=grapec.Headers([("x-t", "a"), ("x-t", "b")]))
+    assert reply.metadata["x-t"] == "a,b"
+
+
+def test_headers_mapping():
+    headers = grapec.Headers([("a", "1"), ("b", b"\x00"), ("a", "2")])
+    assert list(headers) == ["a", "b"] and len(headers) == 2
+    assert headers["a"] == "1" and headers.get("c") is None
+    assert dict(headers) == {"a": "1", "b": b"\x00"}
+    assert headers != {"a": "1", "b": b"\x00"}
+    assert grapec.Headers({"a": "1"}) == {"a": "1"}
+    assert headers == grapec.Headers(headers)
+    assert repr(headers) == "Headers([('a', '1'), ('a', '2'), ('b', b'\\x00')])"
+

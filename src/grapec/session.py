@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable, Protocol, TypeVar
 from urllib.parse import SplitResult, parse_qs, urlsplit
 
 from . import thrift as _thrift
-from .errors import RpcError, Status
+from .errors import Headers, MetadataLike, RpcError, Status
 from .wire import WireError
 from .pool import Pool
 from .schema import SchemaError
@@ -20,8 +20,6 @@ from .service import Metadata as ResponseMetadata, MethodSpec, method_of, remote
 
 Req = TypeVar("Req")
 Resp = TypeVar("Resp")
-
-Metadata = dict[str, str | bytes]
 
 # default cap on one received message, the grpcio default
 MAX_RECEIVE_SIZE = 4 * 1024 * 1024
@@ -44,9 +42,9 @@ class Connection(Protocol):
         payload: bytes,
         *,
         timeout: float | None,
-        metadata: Metadata | None,
+        metadata: MetadataLike | None,
         compression: str | None,
-    ) -> tuple[bytes, Metadata, Metadata]: ...
+    ) -> tuple[bytes, Headers, Headers]: ...
 
 
 class AsyncConnection(Protocol):
@@ -67,9 +65,9 @@ class AsyncConnection(Protocol):
         payload: bytes,
         *,
         timeout: float | None,
-        metadata: Metadata | None,
+        metadata: MetadataLike | None,
         compression: str | None,
-    ) -> tuple[bytes, Metadata, Metadata]: ...
+    ) -> tuple[bytes, Headers, Headers]: ...
 
 
 ConnectionFactory = Callable[[], Connection]
@@ -291,7 +289,7 @@ class _BaseSession:
         return make(TransportOptions(self._parsed, self._connect_timeout, self._ssl, self._max_receive_size))
 
     def _prepare(
-        self, method: Any, args: tuple[Any, ...], kwargs: dict[str, Any], timeout: Any, metadata: Metadata | None, compression: Any
+        self, method: Any, args: tuple[Any, ...], kwargs: dict[str, Any], timeout: Any, metadata: MetadataLike | None, compression: Any
     ) -> tuple[MethodSpec, str, bytes, float | None, str | None]:
         spec = method_of(method)
         protocol = self._protocol
@@ -377,7 +375,7 @@ class Session(_BaseSession):
         /,
         *args: Any,
         timeout: float | None = INHERIT,
-        metadata: Metadata | None = None,
+        metadata: MetadataLike | None = None,
         compression: str | None = INHERIT,
         **kwargs: Any,
     ) -> Resp:
@@ -486,7 +484,7 @@ class AsyncSession(_BaseSession):
         /,
         *args: Any,
         timeout: float | None = INHERIT,
-        metadata: Metadata | None = None,
+        metadata: MetadataLike | None = None,
         compression: str | None = INHERIT,
         **kwargs: Any,
     ) -> Resp:

@@ -7,8 +7,8 @@ import ssl
 import time
 from typing import Any
 
-from .errors import RpcError, Status, TransportError
-from .grpc import IO_ERRORS, GrpcProtocol, Metadata, authority, tls_context
+from .errors import Headers, MetadataLike, RpcError, Status, TransportError
+from .grpc import IO_ERRORS, GrpcProtocol, authority, tls_context
 from .thrift import ThriftProtocol
 
 _RECV_SIZE = 65536
@@ -96,9 +96,9 @@ class GrpcConnection:
         payload: bytes,
         *,
         timeout: float | None,
-        metadata: Metadata | None,
+        metadata: MetadataLike | None,
         compression: str | None,
-    ) -> tuple[bytes, Metadata, Metadata]:
+    ) -> tuple[bytes, Headers, Headers]:
         proto = self._proto
         deadline = time.monotonic() + timeout if timeout is not None else None
         try:
@@ -192,9 +192,9 @@ class ThriftConnection:
         payload: bytes,
         *,
         timeout: float | None,
-        metadata: Metadata | None,
+        metadata: MetadataLike | None,
         compression: str | None,
-    ) -> tuple[bytes, Metadata, Metadata]:
+    ) -> tuple[bytes, Headers, Headers]:
         proto = self._proto
         deadline = time.monotonic() + timeout if timeout is not None else None
         try:
@@ -208,7 +208,7 @@ class ThriftConnection:
                         raise socket.timeout()
                     self._sock.settimeout(remaining)
                 proto.feed(self._sock.recv(_RECV_SIZE))
-            return proto.result(), {}, {}
+            return proto.result(), Headers(), Headers()
         except RpcError:
             raise
         except socket.timeout as exc:

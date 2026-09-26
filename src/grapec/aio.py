@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import ssl
 
-from .errors import RpcError, Status, TransportError
-from .grpc import IO_ERRORS, GrpcProtocol, Metadata, authority, tls_context
+from .errors import Headers, MetadataLike, RpcError, Status, TransportError
+from .grpc import IO_ERRORS, GrpcProtocol, authority, tls_context
 from .thrift import ThriftProtocol
 
 _RECV_SIZE = 65536
@@ -110,9 +110,9 @@ class AsyncGrpcConnection:
         payload: bytes,
         *,
         timeout: float | None,
-        metadata: Metadata | None,
+        metadata: MetadataLike | None,
         compression: str | None,
-    ) -> tuple[bytes, Metadata, Metadata]:
+    ) -> tuple[bytes, Headers, Headers]:
         proto = self._proto
         assert self._reader is not None
         try:
@@ -236,9 +236,9 @@ class AsyncThriftConnection:
         payload: bytes,
         *,
         timeout: float | None,
-        metadata: Metadata | None,
+        metadata: MetadataLike | None,
         compression: str | None,
-    ) -> tuple[bytes, Metadata, Metadata]:
+    ) -> tuple[bytes, Headers, Headers]:
         proto = self._proto
         assert self._reader is not None and self._writer is not None
         try:
@@ -248,7 +248,7 @@ class AsyncThriftConnection:
                 await self._writer.drain()
                 while not proto.done:
                     proto.feed(await self._reader.read(_RECV_SIZE))
-            return proto.result(), {}, {}
+            return proto.result(), Headers(), Headers()
         except RpcError:
             raise
         except TimeoutError as exc:

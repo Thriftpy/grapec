@@ -256,3 +256,9 @@ async def test_max_receive_size_keeps_the_connection(url):
 async def test_large_response_within_the_default_limit(greeter):
     assert len((await greeter.big(HelloRequest(name=str(3 << 20)))).message) == 3 << 20
 
+
+async def test_repeated_metadata(greeter):
+    _, meta = await greeter.say_hello_with_metadata(HelloRequest(name="d"))
+    assert meta.headers.get_all("x-dup") == ["1", "2"]
+    reply = await greeter.say_hello(HelloRequest(name="m"), metadata=[("x-t", "a"), ("x-t", "b")])
+    assert reply.metadata["x-t"] == "a,b"

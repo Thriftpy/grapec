@@ -16,7 +16,7 @@ grapec turns plain annotated Python classes into serializable structs that speak
 - `src/grapec/pool.py`: idle connection bookkeeping shared by both clients, including the `max_idle_time` eviction. The `max_conns` cap lives in `session.py` instead, one semaphore flavour per client.
 - `src/grapec/grpc.py`: sans-IO gRPC over HTTP/2 state machine on top of `h2`, the only place that knows gRPC framing and headers. It also enforces `max_receive_size` (reset on the length prefix, bounded decompression). Never touches a socket. Feeds h2 one frame at a time so a response that completes right before a GOAWAY survives, ignores RST_STREAM after END_STREAM, and cancels a stream with RST_STREAM(CANCEL) on deadline expiry instead of dropping the connection.
 - `src/grapec/sync.py` and `src/grapec/aio.py`: thin blocking socket and asyncio shells around `GrpcProtocol` and `ThriftProtocol`.
-- `src/grapec/errors.py`: `Status`, `RpcError`, `TransportError`.
+- `src/grapec/errors.py`: `Status`, `RpcError`, `TransportError`, and `Headers`, the multi value metadata mapping used for response headers and trailers.
 - `docs/reference.md`: the full user facing reference. The README stays a short introduction, document new public behaviour in the reference.
 - `examples/eliza.py`, `examples/grpcbin.py`: zero setup demos against public gRPC servers (demo.connectrpc.com, grpcb.in). Keep them runnable, they are the first thing a reader tries.
 - `examples/grpc/`: full gRPC feature tour. `server.py` is a grpcio server standing in for a foreign service, `client.py` and `async_client.py` use grapec only.

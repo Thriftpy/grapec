@@ -21,7 +21,7 @@ Example::
 """
 
 from .protobuf import EncodeError
-from .errors import GrapecError, RpcError, Status, TransportError
+from .errors import GrapecError, Headers, RpcError, Status, TransportError
 from .proto import export_proto
 from .schema import I8, I16, I32, I64, Id, SchemaError, is_struct
 from .service import (
@@ -54,6 +54,7 @@ __all__ = [
     "raises",
     "CallOptions",
     "Metadata",
+    "Headers",
     "close",
     "aclose",
     "session_of",

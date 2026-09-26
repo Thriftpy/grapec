@@ -27,6 +27,7 @@ import dataclasses
 import inspect
 from typing import Any, Callable, TypedDict, TypeVar, get_args, get_origin, get_type_hints
 
+from .errors import Headers, MetadataLike
 from .schema import Id, ListType, MapType, SchemaError, StructType, TypeSpec, apply_width, is_struct, resolve_type, split_annotated, split_optional
 from .struct import _PACKAGE_RE
 
@@ -46,15 +47,15 @@ class Metadata:
 
     Returned next to the value when a method is annotated with
     ``-> tuple[T, grapec.Metadata]``. ``headers`` and ``trailers`` are the
-    metadata the server sent, binary values (``-bin`` keys) are ``bytes``.
+    metadata the server sent as ``grapec.Headers``, a key may repeat.
     Thrift fills ``headers`` only with a transport that carries them.
     """
 
     __slots__ = ("headers", "trailers")
 
-    def __init__(self, headers: dict[str, str | bytes] | None = None, trailers: dict[str, str | bytes] | None = None) -> None:
-        self.headers: dict[str, str | bytes] = dict(headers or {})
-        self.trailers: dict[str, str | bytes] = dict(trailers or {})
+    def __init__(self, headers: MetadataLike | None = None, trailers: MetadataLike | None = None) -> None:
+        self.headers = Headers(headers)
+        self.trailers = Headers(trailers)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Metadata):
@@ -71,7 +72,7 @@ class CallOptions(TypedDict, total=False):
     """Keyword arguments every remote method accepts."""
 
     timeout: float | None
-    metadata: dict[str, str | bytes] | None
+    metadata: MetadataLike | None
     compression: str | None
 
 

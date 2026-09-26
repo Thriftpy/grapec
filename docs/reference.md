@@ -170,9 +170,10 @@ meta.trailers["x-request-id"]
 - Calls accept positional and keyword arguments like a normal Python call.
 - Every method also accepts `timeout=`, `metadata=` and `compression=` keyword arguments. Declare `**options: Unpack[grapec.CallOptions]` on a method if you want type checkers to see them.
 - `timeout` is in seconds and overrides the client's default, an explicit `timeout=None` disables it for that call. Expiry raises `RpcError` with `Status.DEADLINE_EXCEEDED`. The deadline covers sending the request and reading the reply on a connection, it does not include waiting for a pooled connection (`pool_timeout`) or establishing a new one (`connect_timeout`), so a call can take up to the sum of the three. Likewise `compression=None` sends that call uncompressed even when the client sets a default.
-- `metadata` is a dict of request headers. Binary values must be `bytes` under a key ending in `-bin`.
+- `metadata` holds request headers, a dict or a list of `(key, value)` pairs when a key has to repeat. Binary values must be `bytes` under a key ending in `-bin`.
 - `compression` is `"gzip"` or `"deflate"` and compresses the request. Compressed responses are always accepted.
-- To receive response metadata, annotate the return type as a tuple of the value type and `grapec.Metadata`, in either order. The call then returns that tuple. `Metadata` has `headers` and `trailers` dicts, binary values (`-bin` keys) come back as `bytes`. The same wire method can be declared twice under different Python names (`@grapec.name`) if you want both shapes. A tuple is never a wire type, so the annotation is unambiguous. On `RpcError` the metadata is on the exception instead.
+- To receive response metadata, annotate the return type as a tuple of the value type and `grapec.Metadata`, in either order. The call then returns that tuple. `Metadata` has `headers` and `trailers`, both `grapec.Headers`, binary values (`-bin` keys) come back as `bytes`. The same wire method can be declared twice under different Python names (`@grapec.name`) if you want both shapes. A tuple is never a wire type, so the annotation is unambiguous. On `RpcError` the metadata is on the exception instead.
+- `grapec.Headers` is a read only mapping in which a key may carry several values, the way gRPC metadata works. `headers[key]` is the first value, `headers.get_all(key)` lists all of them in order. It compares equal to a plain dict when no key repeats, and can be passed back as `metadata=` with every value included.
 - `metadata` and `compression` are gRPC concepts, see [Thrift](#thrift) for what happens there.
 
 ### Sessions and pooling
@@ -235,7 +236,7 @@ Declared thrift exceptions are raised as themselves, see [Thrift](#thrift).
 `grpc://` and `grpcs://` speak gRPC over HTTP/2 with protobuf payloads. Unary calls only, streaming is not implemented yet.
 
 - Methods take exactly one struct and return one struct. The request class is checked at call time.
-- Request headers from `metadata=` and response headers and trailers in `grapec.Metadata` are passed as is. For a trailers-only response everything is reported as trailers, like other gRPC clients do.
+- Request headers from `metadata=` and response headers and trailers in `grapec.Metadata` are passed as is, repeated keys included. A binary header that a proxy folded into one comma separated value is split back into its values. For a trailers-only response everything is reported as trailers, like other gRPC clients do.
 - An expired deadline cancels the stream with `RST_STREAM` and keeps the connection.
 - `gzip` and `deflate` are available for `compression`.
 

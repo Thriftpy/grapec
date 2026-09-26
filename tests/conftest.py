@@ -40,9 +40,17 @@ def _servicer():
 
     class Greeter(rpc_pb2_grpc.GreeterServicer):
         def SayHello(self, request, context):
-            md = {k: (v if isinstance(v, str) else v.hex()) for k, v in context.invocation_metadata()}
-            context.send_initial_metadata((("x-initial", "yes"),))
-            context.set_trailing_metadata((("x-echo", request.name), ("x-raw-bin", b"\x01\x02")))
+            md = {}
+            for k, v in context.invocation_metadata():
+                v = v if isinstance(v, str) else v.hex()
+                md[k] = f"{md[k]},{v}" if k in md else v  # repeated keys joined for the tests
+            context.send_initial_metadata((("x-initial", "yes"), ("x-dup", "1"), ("x-dup", "2")))
+            context.set_trailing_metadata((
+                ("x-echo", request.name),
+                ("x-raw-bin", b"\x01\x02"),
+                ("x-dup-bin", b"\x01"),
+                ("x-dup-bin", b"\x02"),
+            ))
             return rpc_pb2.HelloReply(message=f"hello {request.name} {len(request.blob)}", metadata=md)
 
         def Fail(self, request, context):

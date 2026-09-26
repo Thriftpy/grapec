@@ -23,7 +23,7 @@ import h2.events
 import h2.exceptions
 import h2.settings
 
-from .errors import RpcError, Status, TransportError
+from .errors import Headers, MetadataLike, RpcError, Status, TransportError, metadata_pairs
 
 USER_AGENT = "grapec"
 
@@ -37,8 +37,6 @@ _DECODERS = {
     "deflate": 15,
 }
 ACCEPT_ENCODING = "identity,gzip,deflate"
-
-Metadata = dict[str, str | bytes]
 
 # HTTP/2 receive window per stream and per connection, the 64 KiB protocol
 # default would stall a large response on every round trip
@@ -96,7 +94,7 @@ class GrpcProtocol:
         payload: bytes,
         *,
         timeout: float | None,
-        metadata: Metadata | None,
+        metadata: MetadataLike | None,
         compression: str | None,
     ) -> None:
         """Queue one unary call. Follow with ``data_to_send`` / ``feed`` until ``done``."""
@@ -177,9 +175,9 @@ class GrpcProtocol:
                 call.data += event.data
                 self._check_size(call)
             elif isinstance(event, h2.events.ResponseReceived):
-                call.headers = dict(event.headers)
+                call.headers = event.headers
             elif isinstance(event, h2.events.TrailersReceived):
-                call.trailers = dict(event.headers)
+                call.trailers = event.headers
             elif isinstance(event, h2.events.StreamEnded):
                 call.ended = True
             elif isinstance(event, h2.events.StreamReset):
@@ -216,7 +214,7 @@ class GrpcProtocol:
     def done(self) -> bool:
         return self._call is not None and self._call.ended
 
-    def result(self) -> tuple[bytes, Metadata, Metadata]:
+    def result(self) -> tuple[bytes, Headers, Headers]:
         """Response message, headers and trailers of the finished call.
 
         Raises ``RpcError`` for a non OK status.
@@ -260,7 +258,7 @@ class GrpcProtocol:
     # -- headers ---------------------------------------------------------------
 
     def _request_headers(
-        self, path: str, timeout: float | None, metadata: Metadata | None, compression: str | None
+        self, path: str, timeout: float | None, metadata: MetadataLike | None, compression: str | None
     ) -> list[tuple[str, str]]:
         headers = [
             (":method", "POST"),
@@ -276,7 +274,7 @@ class GrpcProtocol:
             headers.append(("grpc-encoding", compression))
         if timeout is not None:
             headers.append(("grpc-timeout", _format_timeout(timeout)))
-        for key, value in (metadata or {}).items():
+        for key, value in metadata_pairs(metadata):
             key = key.lower()
             if key.startswith(":") or key.startswith("grpc-"):
                 raise ValueError(f"metadata key {key!r} is reserved")
@@ -293,16 +291,18 @@ class _Call:
     def __init__(self, stream_id: int, body: bytes) -> None:
         self.stream_id = stream_id
         self.pending = memoryview(body)
-        self.headers: dict[str, str] = {}
-        self.trailers: dict[str, str] = {}
+        self.headers: list[tuple[str, str]] = []
+        self.trailers: list[tuple[str, str]] = []
         self.data = bytearray()
         self.ended = False
 
-    def finish(self, max_receive_size: int | None) -> tuple[bytes, Metadata, Metadata]:
-        http_status = self.headers.get(":status")
-        if not self.trailers and "grpc-status" in self.headers:
+    def finish(self, max_receive_size: int | None) -> tuple[bytes, Headers, Headers]:
+        raw_headers = dict(self.headers)
+        raw_trailers = dict(self.trailers)
+        http_status = raw_headers.get(":status")
+        if not self.trailers and "grpc-status" in raw_headers:
             # trailers-only response, gRPC reports its metadata as trailers
-            headers: Metadata = {}
+            headers = Headers()
             trailers = _metadata(self.headers)
         else:
             headers = _metadata(self.headers)
@@ -316,7 +316,7 @@ class _Call:
             )
 
         # trailers-only responses carry grpc-status in the headers
-        meta = self.trailers or self.headers
+        meta = raw_trailers or raw_headers
         raw_status = meta.get("grpc-status")
         if raw_status is None:
             raise TransportError("response is missing grpc-status")
@@ -326,7 +326,7 @@ class _Call:
         if code is not Status.OK:
             raise RpcError(code, message, details, headers=headers, trailers=trailers)
 
-        payload = _unframe(bytes(self.data), self.headers.get("grpc-encoding", "identity"), max_receive_size)
+        payload = _unframe(bytes(self.data), raw_headers.get("grpc-encoding", "identity"), max_receive_size)
         return payload, headers, trailers
 
 
@@ -339,14 +339,21 @@ def _b64decode(text: str) -> bytes:
         return b""
 
 
-def _metadata(raw: dict[str, str]) -> Metadata:
-    """User visible metadata: no pseudo headers, no status trailers, ``-bin`` decoded."""
-    out: Metadata = {}
-    for key, value in raw.items():
+def _metadata(raw: list[tuple[str, str]]) -> Headers:
+    """User visible metadata: no pseudo headers, no status trailers, ``-bin`` decoded.
+
+    Repeated keys keep every value. A proxy may fold repeated binary values
+    into one comma separated header, those are split again.
+    """
+    pairs: list[tuple[str, str | bytes]] = []
+    for key, value in raw:
         if key.startswith(":") or key in _STATUS_KEYS:
             continue
-        out[key] = _b64decode(value) if key.endswith("-bin") else value
-    return out
+        if key.endswith("-bin"):
+            pairs.extend((key, _b64decode(part.strip())) for part in value.split(","))
+        else:
+            pairs.append((key, value))
+    return Headers(pairs)
 
 
 def _too_large(size: int, limit: int) -> RpcError:
