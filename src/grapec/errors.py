@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Any
+from typing import Any, TypeVar
+
+T = TypeVar("T")
 
 
 class Status(enum.IntEnum):
@@ -104,6 +106,8 @@ class RpcError(GrapecError):
 
     ``headers`` and ``trailers`` hold the response metadata the server sent
     along with the status, binary values (``-bin`` keys) are ``bytes``.
+    ``details`` is the raw ``google.rpc.Status`` the server attached, if any,
+    ``unpack`` decodes the entries in it.
     """
 
     def __init__(
@@ -121,6 +125,33 @@ class RpcError(GrapecError):
         self.details = details
         self.headers = Headers(headers)
         self.trailers = Headers(trailers)
+
+    def unpack(self, *types: type[T]) -> list[T]:
+        """Decode the error details that are instances of ``types``.
+
+        ``details`` holds a ``google.rpc.Status`` whose entries are
+        ``google.protobuf.Any`` values. Each entry whose type name matches
+        one of ``types`` (``package.ClassName`` of a ``@grapec.struct``) is
+        decoded, in order, the others are skipped. Declare the detail
+        structs you expect, for example ``google.rpc.BadRequest``.
+        """
+        from .grpc import RichStatus
+        from .schema import is_struct, schema_of
+
+        by_name: dict[str, type[T]] = {}
+        for tp in types:
+            if not is_struct(tp):
+                raise TypeError(f"unpack expects @grapec.struct classes, got {tp!r}")
+            by_name[schema_of(tp).full_name] = tp
+        if not self.details:
+            return []
+        status = RichStatus.from_bytes(self.details)
+        out = []
+        for entry in status.details:
+            tp = by_name.get(entry.type_url.rpartition("/")[2])
+            if tp is not None:
+                out.append(tp.from_bytes(entry.value))  # type: ignore[attr-defined]
+        return out
 
 
 

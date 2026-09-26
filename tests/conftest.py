@@ -71,6 +71,17 @@ def _servicer():
                 context.set_compression(grpc.Compression.Gzip)
             return rpc_pb2.HelloReply(message="x" * int(request.name))
 
+        def Rich(self, request, context):
+            import oracle_pb2
+            from google.protobuf import any_pb2, duration_pb2
+
+            info, retry = any_pb2.Any(), any_pb2.Any()
+            info.Pack(oracle_pb2.ErrorInfo(reason="QUOTA", domain="example.com"))
+            retry.Pack(oracle_pb2.RetryInfo(retry_delay=duration_pb2.Duration(seconds=3)))
+            status = oracle_pb2.RichStatus(code=8, message="slow down", details=[info, retry])
+            context.set_trailing_metadata((("grpc-status-details-bin", status.SerializeToString()),))
+            context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "slow down")
+
     return Greeter()
 
 

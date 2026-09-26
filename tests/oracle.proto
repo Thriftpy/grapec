@@ -3,6 +3,7 @@ package test.v1;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/any.proto";
 
 enum Color {
   COLOR_UNSPECIFIED = 0;
@@ -42,3 +43,18 @@ message Everything {
   }
 }
 
+// same fields as google.rpc.Status, for the rich error details tests
+message RichStatus {
+  int32 code = 1;
+  string message = 2;
+  repeated google.protobuf.Any details = 3;
+}
+
+message ErrorInfo {
+  string reason = 1;
+  string domain = 2;
+}
+
+message RetryInfo {
+  google.protobuf.Duration retry_delay = 1;
+}

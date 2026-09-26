@@ -3,7 +3,7 @@ import ssl
 
 import pytest
 import pytest_asyncio
-from test_client import HelloReply, HelloRequest
+from test_client import ErrorInfo, HelloReply, HelloRequest
 
 import grapec
 
@@ -28,6 +28,9 @@ class AsyncGreeter(grapec.AsyncClient, package="test.rpc", name="Greeter"):
 
     @grapec.name("Big")
     async def big(self, request: HelloRequest) -> HelloReply: ...
+
+    @grapec.name("Rich")
+    async def rich(self, request: HelloRequest) -> HelloReply: ...
 
 
 @pytest.fixture
@@ -257,8 +260,11 @@ async def test_large_response_within_the_default_limit(greeter):
     assert len((await greeter.big(HelloRequest(name=str(3 << 20)))).message) == 3 << 20
 
 
-async def test_repeated_metadata(greeter):
+async def test_repeated_metadata_and_rich_details(greeter):
     _, meta = await greeter.say_hello_with_metadata(HelloRequest(name="d"))
     assert meta.headers.get_all("x-dup") == ["1", "2"]
     reply = await greeter.say_hello(HelloRequest(name="m"), metadata=[("x-t", "a"), ("x-t", "b")])
     assert reply.metadata["x-t"] == "a,b"
+    with pytest.raises(grapec.RpcError) as info:
+        await greeter.rich(HelloRequest(name="r"))
+    assert info.value.unpack(ErrorInfo) == [ErrorInfo(reason="QUOTA", domain="example.com")]

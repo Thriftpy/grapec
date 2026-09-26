@@ -2,6 +2,7 @@ import socket
 import ssl
 import threading
 import time
+from datetime import timedelta
 from typing import Unpack
 
 import pytest
@@ -47,6 +48,19 @@ class Greeter(grapec.Client, package="test.rpc"):
     @grapec.name("Big")
     def big(self, request: HelloRequest) -> HelloReply: ...
 
+    @grapec.name("Rich")
+    def rich(self, request: HelloRequest) -> HelloReply: ...
+
+
+@grapec.struct(package="test.v1")
+class ErrorInfo:
+    reason: str
+    domain: str
+
+
+@grapec.struct(package="test.v1")
+class RetryInfo:
+    retry_delay: timedelta
 
 
 @pytest.fixture
@@ -659,3 +673,24 @@ def test_headers_mapping():
     assert headers == grapec.Headers(headers)
     assert repr(headers) == "Headers([('a', '1'), ('a', '2'), ('b', b'\\x00')])"
 
+
+def test_rich_error_details(greeter):
+    with pytest.raises(grapec.RpcError) as info:
+        greeter.rich(HelloRequest(name="r"))
+    err = info.value
+    assert err.code is grapec.Status.RESOURCE_EXHAUSTED
+    assert err.unpack(ErrorInfo, RetryInfo) == [
+        ErrorInfo(reason="QUOTA", domain="example.com"),
+        RetryInfo(retry_delay=timedelta(seconds=3)),
+    ]
+    assert err.unpack(RetryInfo) == [RetryInfo(retry_delay=timedelta(seconds=3))]
+    assert err.unpack(HelloReply) == []
+    assert "grpc-status-details-bin" not in err.trailers
+    with pytest.raises(TypeError, match="struct"):
+        err.unpack(int)
+    # the connection survives the error
+    assert greeter.say_hello(HelloRequest(name="x")).message == "hello x 0"
+
+
+def test_unpack_without_details():
+    assert grapec.RpcError(grapec.Status.INTERNAL, "x").unpack(ErrorInfo) == []

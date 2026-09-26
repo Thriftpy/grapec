@@ -63,6 +63,7 @@ service Greeter {
   rpc Missing (HelloRequest) returns (HelloReply);
   rpc Compressed (HelloRequest) returns (HelloReply);
   rpc Big (HelloRequest) returns (HelloReply);
+  rpc Rich (HelloRequest) returns (HelloReply);
 }
 '''
 

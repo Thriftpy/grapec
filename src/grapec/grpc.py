@@ -13,7 +13,7 @@ import binascii
 import gzip
 import struct as _struct
 import zlib
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import unquote
 
 import h2.config
@@ -24,6 +24,8 @@ import h2.exceptions
 import h2.settings
 
 from .errors import Headers, MetadataLike, RpcError, Status, TransportError, metadata_pairs
+from .schema import I32
+from .struct import struct
 
 USER_AGENT = "grapec"
 
@@ -49,6 +51,23 @@ _FRAME_HEADER = 9
 _CLOSED = h2.connection.ConnectionState.CLOSED
 # transport level trailers that are reported through RpcError / the payload
 _STATUS_KEYS = frozenset({"grpc-status", "grpc-message", "grpc-status-details-bin"})
+
+
+@struct(package="google.protobuf")
+class AnyEntry:
+    """``google.protobuf.Any``, one entry of the rich error details."""
+
+    type_url: str = ""
+    value: bytes = b""
+
+
+@struct(package="google.rpc")
+class RichStatus:
+    """``google.rpc.Status``, sent in the ``grpc-status-details-bin`` trailer."""
+
+    code: Annotated[int, I32] = 0
+    message: str = ""
+    details: list[AnyEntry]
 
 
 def authority(host: str, port: int) -> str:

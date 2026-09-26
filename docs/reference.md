@@ -226,6 +226,21 @@ Same call options and pooling rules. Concurrent calls each get their own connect
 grapec separates two kinds of failures. Mistakes in the calling program raise the built in `TypeError` / `ValueError` family, like the standard library does, and are not meant to be caught: a value of the wrong type raises `grapec.EncodeError`, a class that cannot be a schema raises `grapec.SchemaError` (both `TypeError` subclasses), a call option the protocol has no concept of raises a plain `TypeError`. Failures of the call itself subclass `grapec.GrapecError`:
 
 - `grapec.RpcError`: the server answered with a non OK status. It carries `code` (`grapec.Status`, an `IntEnum` aligned with the gRPC status codes), `message`, `details` (raw bytes), and the response metadata as `headers` and `trailers`. grapec itself uses `Status.DEADLINE_EXCEEDED` for an expired timeout, `Status.RESOURCE_EXHAUSTED` for a `pool_timeout` or a reply above `max_receive_size`, and `Status.INTERNAL` for a reply it cannot decode.
+- `err.unpack(*types)` decodes rich error details. `details` holds a `google.rpc.Status` whose entries are `google.protobuf.Any` values, every entry whose type name matches one of the given structs (`package.ClassName`) is decoded and returned in order, the rest are skipped. grapec ships no detail types, declare the ones you expect:
+
+```python
+@grapec.struct(package="google.rpc")
+class ErrorInfo:
+    reason: str
+    domain: str
+    metadata: dict[str, str]
+
+try:
+    client.create(req)
+except grapec.RpcError as err:
+    for info in err.unpack(ErrorInfo):
+        print(info.reason)
+```
 - `grapec.TransportError`: the connection itself failed (refused, reset, protocol error). The connection is discarded, the next call opens a new one.
 - `grapec.WireError` and `grapec.ThriftError`: bytes that do not follow the protobuf or thrift encoding. Inside a call they are wrapped in `RpcError` with `Status.INTERNAL`, directly from `from_bytes` they are raised as is.
 
