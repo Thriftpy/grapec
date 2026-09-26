@@ -83,10 +83,11 @@ def test_bad_replies_kill_the_connection(frame, match):
 
 
 def test_oversized_frame_is_rejected():
-    proto = ThriftProtocol()
+    proto = ThriftProtocol(max_receive_size=1024)
     proto.start("get", b"\x00")
-    with pytest.raises(grapec.TransportError, match="exceeds"):
-        proto.feed(struct.pack(">I", 1 << 30))
+    with pytest.raises(grapec.RpcError, match="max_receive_size") as info:
+        proto.feed(struct.pack(">I", 1025))
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
     assert not proto.healthy
 
 

@@ -23,6 +23,7 @@ class GrpcConnection:
         tls: bool,
         connect_timeout: float | None,
         ssl_context: ssl.SSLContext | None = None,
+        max_receive_size: int | None = None,
     ) -> None:
         target = authority(host, port)
         sock: Any = None
@@ -34,7 +35,7 @@ class GrpcConnection:
                 sock = ctx.wrap_socket(sock, server_hostname=host)
                 if sock.selected_alpn_protocol() != "h2":
                     raise TransportError("server did not negotiate HTTP/2")
-            self._proto = GrpcProtocol(target, tls=tls)
+            self._proto = GrpcProtocol(target, tls=tls, max_receive_size=max_receive_size)
             sock.sendall(self._proto.data_to_send())
         except (OSError, TransportError) as exc:
             if sock is not None:
@@ -118,6 +119,8 @@ class GrpcConnection:
                 proto.feed(self._sock.recv(_RECV_SIZE))
             return proto.result()
         except RpcError:
+            # an oversized response leaves a RST_STREAM to flush
+            self._send_quietly(proto.data_to_send())
             raise
         except socket.timeout as exc:
             self._send_quietly(proto.cancel())
@@ -147,6 +150,7 @@ class ThriftConnection:
         connect_timeout: float | None,
         ssl_context: ssl.SSLContext | None = None,
         service: str | None = None,
+        max_receive_size: int | None = None,
     ) -> None:
         target = authority(host, port)
         sock: Any = None
@@ -159,7 +163,7 @@ class ThriftConnection:
                 sock.close()
             raise TransportError(f"cannot connect to {target}: {exc}") from exc
         self._sock = sock
-        self._proto = ThriftProtocol(service)
+        self._proto = ThriftProtocol(service, max_receive_size=max_receive_size)
 
     @property
     def healthy(self) -> bool:

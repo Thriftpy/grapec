@@ -21,6 +21,7 @@ import h2.connection
 import h2.errors
 import h2.events
 import h2.exceptions
+import h2.settings
 
 from .errors import RpcError, Status, TransportError
 
@@ -30,14 +31,18 @@ _ENCODERS = {
     "gzip": gzip.compress,
     "deflate": zlib.compress,
 }
+# zlib wbits per grpc-encoding, gzip framing and zlib framing
 _DECODERS = {
-    "identity": lambda data: data,
-    "gzip": gzip.decompress,
-    "deflate": zlib.decompress,
+    "gzip": 31,
+    "deflate": 15,
 }
 ACCEPT_ENCODING = "identity,gzip,deflate"
 
 Metadata = dict[str, str | bytes]
+
+# HTTP/2 receive window per stream and per connection, the 64 KiB protocol
+# default would stall a large response on every round trip
+_WINDOW_SIZE = 4 * 1024 * 1024
 
 # errors from the IO layer or h2 that mean the connection is unusable
 IO_ERRORS = (OSError, h2.exceptions.H2Error, EOFError)
@@ -56,13 +61,18 @@ def authority(host: str, port: int) -> str:
 class GrpcProtocol:
     """Sans-IO gRPC client state for one HTTP/2 connection, one call at a time."""
 
-    def __init__(self, authority: str, *, tls: bool) -> None:
+    def __init__(self, authority: str, *, tls: bool, max_receive_size: int | None = None) -> None:
         self._authority = authority
         self._scheme = "https" if tls else "http"
+        self._max_receive_size = max_receive_size
         self._h2 = h2.connection.H2Connection(
             config=h2.config.H2Configuration(client_side=True, header_encoding="utf-8")
         )
+        self._h2.local_settings = h2.settings.Settings(
+            client=True, initial_values={h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: _WINDOW_SIZE}
+        )
         self._h2.initiate_connection()
+        self._h2.increment_flow_control_window(_WINDOW_SIZE - self._h2.inbound_flow_control_window)
         self.dead = False
         self._call: _Call | None = None
         self._inbuf = bytearray()
@@ -165,6 +175,7 @@ class GrpcProtocol:
             if isinstance(event, h2.events.DataReceived):
                 self._h2.acknowledge_received_data(event.flow_controlled_length, call.stream_id)
                 call.data += event.data
+                self._check_size(call)
             elif isinstance(event, h2.events.ResponseReceived):
                 call.headers = dict(event.headers)
             elif isinstance(event, h2.events.TrailersReceived):
@@ -176,6 +187,23 @@ class GrpcProtocol:
                     continue  # RST_STREAM(NO_ERROR) after END_STREAM is allowed
                 self.dead = True
                 raise TransportError(f"stream reset by peer (error {event.error_code})")
+
+    def _check_size(self, call: _Call) -> None:
+        """Give up on a response message larger than ``max_receive_size`` as soon as its length prefix arrives."""
+        limit = self._max_receive_size
+        if limit is None or len(call.data) < 5:
+            return
+        # a body running past its own length prefix is caught by _unframe,
+        # but it must not grow without bound meanwhile
+        length = max(int.from_bytes(call.data[1:5], "big"), len(call.data) - 5)
+        if length > limit:
+            # the RST_STREAM stays queued in h2 for the next data_to_send
+            self._call = None
+            try:
+                self._h2.reset_stream(call.stream_id, h2.errors.ErrorCodes.CANCEL)
+            except h2.exceptions.StreamClosedError:
+                pass  # the stream already ended, nothing to reset
+            raise _too_large(length, limit)
 
     def _terminated(self, call: _Call | None, cause: BaseException | None, error_code: Any = None) -> None:
         """The peer closed the connection. Only an unfinished call is an error."""
@@ -196,7 +224,7 @@ class GrpcProtocol:
         call = self._call
         assert call is not None and call.ended
         self._call = None
-        return call.finish()
+        return call.finish(self._max_receive_size)
 
     def cancel(self) -> bytes:
         """Give up on the current call, returns the RST_STREAM bytes to flush.
@@ -270,7 +298,7 @@ class _Call:
         self.data = bytearray()
         self.ended = False
 
-    def finish(self) -> tuple[bytes, Metadata, Metadata]:
+    def finish(self, max_receive_size: int | None) -> tuple[bytes, Metadata, Metadata]:
         http_status = self.headers.get(":status")
         if not self.trailers and "grpc-status" in self.headers:
             # trailers-only response, gRPC reports its metadata as trailers
@@ -298,7 +326,7 @@ class _Call:
         if code is not Status.OK:
             raise RpcError(code, message, details, headers=headers, trailers=trailers)
 
-        payload = _unframe(bytes(self.data), self.headers.get("grpc-encoding", "identity"))
+        payload = _unframe(bytes(self.data), self.headers.get("grpc-encoding", "identity"), max_receive_size)
         return payload, headers, trailers
 
 
@@ -321,7 +349,11 @@ def _metadata(raw: dict[str, str]) -> Metadata:
     return out
 
 
-def _unframe(data: bytes, encoding: str) -> bytes:
+def _too_large(size: int, limit: int) -> RpcError:
+    return RpcError(Status.RESOURCE_EXHAUSTED, f"received message of {size} bytes exceeds max_receive_size ({limit})")
+
+
+def _unframe(data: bytes, encoding: str, limit: int | None) -> bytes:
     if len(data) < 5:
         raise TransportError("response body is truncated")
     compressed, length = _struct.unpack(">BI", data[:5])
@@ -330,13 +362,20 @@ def _unframe(data: bytes, encoding: str) -> bytes:
     message = data[5:]
     if not compressed:
         return message
-    decoder = _DECODERS.get(encoding)
-    if decoder is None:
+    wbits = _DECODERS.get(encoding)
+    if wbits is None:
         raise TransportError(f"unsupported response compression {encoding!r}")
+    # bounded, a tiny compressed message must not expand past the limit
+    decoder = zlib.decompressobj(wbits)
     try:
-        return decoder(message)
-    except (OSError, zlib.error, EOFError) as exc:
+        out = decoder.decompress(message, limit + 1 if limit is not None else 0)
+    except zlib.error as exc:
         raise TransportError(f"cannot decompress response: {exc}") from exc
+    if limit is not None and len(out) > limit:
+        raise RpcError(Status.RESOURCE_EXHAUSTED, f"decompressed message exceeds max_receive_size ({limit})")
+    if not decoder.eof:
+        raise TransportError("cannot decompress response: compressed data is truncated")
+    return out
 
 
 def _status_code(raw: str) -> Status:

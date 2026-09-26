@@ -321,3 +321,25 @@ async def test_async_session_call_with_sync_declaration(thrift_server):
         assert (await session.call(Store.get, "k", 1)).key == "k"
     finally:
         await session.aclose()
+
+
+def test_max_receive_size_drops_the_connection(thrift_server):
+    port, _ = thrift_server
+    store = Store(f"thrift://127.0.0.1:{port}", max_receive_size=40)
+    with pytest.raises(grapec.RpcError, match="max_receive_size") as info:
+        store.get("k", 1)
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+    assert len(grapec.session_of(store)._pool._idle) == 0
+    assert store.total() == 1 << 40  # a small reply on a fresh connection
+    grapec.close(store)
+
+
+@pytest.mark.asyncio
+async def test_async_max_receive_size(thrift_server):
+    port, _ = thrift_server
+    store = AsyncStore(f"thrift://127.0.0.1:{port}", max_receive_size=40)
+    with pytest.raises(grapec.RpcError) as info:
+        await store.get("k", 1)
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+    assert await store.total() == 1 << 40
+    await grapec.aclose(store)

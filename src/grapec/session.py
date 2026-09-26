@@ -23,6 +23,9 @@ Resp = TypeVar("Resp")
 
 Metadata = dict[str, str | bytes]
 
+# default cap on one received message, the grpcio default
+MAX_RECEIVE_SIZE = 4 * 1024 * 1024
+
 
 class Connection(Protocol):
     """What a sync transport provides. One call at a time per connection."""
@@ -76,10 +79,11 @@ AsyncConnectionFactory = Callable[[], Awaitable[AsyncConnection]]
 class TransportOptions:
     """What the URL scheme handlers get to build connections."""
 
-    def __init__(self, url: SplitResult, connect_timeout: float | None, ssl: Any) -> None:
+    def __init__(self, url: SplitResult, connect_timeout: float | None, ssl: Any, max_receive_size: int | None) -> None:
         self.url = url
         self.connect_timeout = connect_timeout
         self.ssl = ssl
+        self.max_receive_size = max_receive_size
         self.query = {k: v[-1] for k, v in parse_qs(url.query).items()}
 
 
@@ -169,14 +173,18 @@ def _grpc_sync(opts: TransportOptions, tls: bool) -> ConnectionFactory:
     from .sync import GrpcConnection
 
     host, port = _host_port(opts.url, 443 if tls else 80)
-    return lambda: GrpcConnection(host, port, tls=tls, connect_timeout=opts.connect_timeout, ssl_context=opts.ssl)
+    return lambda: GrpcConnection(
+        host, port, tls=tls, connect_timeout=opts.connect_timeout, ssl_context=opts.ssl, max_receive_size=opts.max_receive_size
+    )
 
 
 def _grpc_async(opts: TransportOptions, tls: bool) -> AsyncConnectionFactory:
     from .aio import AsyncGrpcConnection
 
     host, port = _host_port(opts.url, 443 if tls else 80)
-    return lambda: AsyncGrpcConnection(host, port, tls=tls, ssl_context=opts.ssl).connect(opts.connect_timeout)
+    return lambda: AsyncGrpcConnection(
+        host, port, tls=tls, ssl_context=opts.ssl, max_receive_size=opts.max_receive_size
+    ).connect(opts.connect_timeout)
 
 
 def _thrift_service(opts: TransportOptions) -> str | None:
@@ -192,7 +200,15 @@ def _thrift_sync(opts: TransportOptions, tls: bool) -> ConnectionFactory:
 
     host, port = _host_port(opts.url, 9090)
     service = _thrift_service(opts)
-    return lambda: ThriftConnection(host, port, tls=tls, connect_timeout=opts.connect_timeout, ssl_context=opts.ssl, service=service)
+    return lambda: ThriftConnection(
+        host,
+        port,
+        tls=tls,
+        connect_timeout=opts.connect_timeout,
+        ssl_context=opts.ssl,
+        service=service,
+        max_receive_size=opts.max_receive_size,
+    )
 
 
 def _thrift_async(opts: TransportOptions, tls: bool) -> AsyncConnectionFactory:
@@ -200,7 +216,9 @@ def _thrift_async(opts: TransportOptions, tls: bool) -> AsyncConnectionFactory:
 
     host, port = _host_port(opts.url, 9090)
     service = _thrift_service(opts)
-    return lambda: AsyncThriftConnection(host, port, tls=tls, ssl_context=opts.ssl, service=service).connect(opts.connect_timeout)
+    return lambda: AsyncThriftConnection(
+        host, port, tls=tls, ssl_context=opts.ssl, service=service, max_receive_size=opts.max_receive_size
+    ).connect(opts.connect_timeout)
 
 
 _SYNC_SCHEMES: dict[str, Callable[[TransportOptions], ConnectionFactory]] = {
@@ -233,6 +251,7 @@ class _BaseSession:
         connect_timeout: float | None,
         compression: str | None,
         ssl: Any,
+        max_receive_size: int | None,
     ) -> None:
         self.url = url
         self.timeout = timeout
@@ -244,6 +263,9 @@ class _BaseSession:
             raise ValueError(f"max_conns must be at least 1, got {max_conns}")
         if pool_timeout is not None and pool_timeout < 0:
             raise ValueError(f"pool_timeout must not be negative, got {pool_timeout}")
+        if max_receive_size is not None and max_receive_size < 1:
+            raise ValueError(f"max_receive_size must be at least 1, got {max_receive_size}")
+        self._max_receive_size = max_receive_size
         self._max_conns = max_conns
         self._pool_timeout = pool_timeout
         self._pool: Pool[Any] = Pool(max_idle, max_idle_time)
@@ -266,7 +288,7 @@ class _BaseSession:
             make = schemes[self._parsed.scheme]
         except KeyError:
             raise ValueError(f"unsupported scheme {self._parsed.scheme!r} in {self.url!r}") from None
-        return make(TransportOptions(self._parsed, self._connect_timeout, self._ssl))
+        return make(TransportOptions(self._parsed, self._connect_timeout, self._ssl, self._max_receive_size))
 
     def _prepare(
         self, method: Any, args: tuple[Any, ...], kwargs: dict[str, Any], timeout: Any, metadata: Metadata | None, compression: Any
@@ -312,6 +334,11 @@ class Session(_BaseSession):
     requests. Compressed responses are always accepted. ``ssl`` is an
     ``ssl.SSLContext`` for ``grpcs://`` URLs, the default context verifies
     against the system trust store.
+
+    ``max_receive_size`` caps one received message (a thrift reply frame),
+    4 MiB by default like grpcio, ``None`` lifts the cap. A larger reply
+    raises ``RpcError`` with ``Status.RESOURCE_EXHAUSTED``. A gRPC stream is
+    reset and the connection kept, a thrift connection is dropped.
     """
 
     def __init__(
@@ -326,6 +353,7 @@ class Session(_BaseSession):
         connect_timeout: float | None = 10,
         compression: str | None = None,
         ssl: Any = None,
+        max_receive_size: int | None = MAX_RECEIVE_SIZE,
     ) -> None:
         super().__init__(
             url,
@@ -337,6 +365,7 @@ class Session(_BaseSession):
             connect_timeout=connect_timeout,
             compression=compression,
             ssl=ssl,
+            max_receive_size=max_receive_size,
         )
         self._factory: ConnectionFactory = self._lookup(_SYNC_SCHEMES)
         # bounded so that a permit released without a matching acquire fails loudly
@@ -433,6 +462,7 @@ class AsyncSession(_BaseSession):
         connect_timeout: float | None = 10,
         compression: str | None = None,
         ssl: Any = None,
+        max_receive_size: int | None = MAX_RECEIVE_SIZE,
     ) -> None:
         super().__init__(
             url,
@@ -444,6 +474,7 @@ class AsyncSession(_BaseSession):
             connect_timeout=connect_timeout,
             compression=compression,
             ssl=ssl,
+            max_receive_size=max_receive_size,
         )
         self._factory: AsyncConnectionFactory = self._lookup(_ASYNC_SCHEMES)
         # made on first use, an asyncio.Semaphore binds to the loop that awaits it

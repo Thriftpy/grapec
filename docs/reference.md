@@ -180,7 +180,7 @@ meta.trailers["x-request-id"]
 A client constructed from a URL owns a `grapec.Session` with these options:
 
 ```python
-Greeter(url, max_idle=4, max_idle_time=60, max_conns=None, pool_timeout=None, timeout=None, connect_timeout=10, compression=None, ssl=None)
+Greeter(url, max_idle=4, max_idle_time=60, max_conns=None, pool_timeout=None, timeout=None, connect_timeout=10, compression=None, ssl=None, max_receive_size=4 * 1024 * 1024)
 ```
 
 - The URL scheme selects the protocol: `grpc://host:port` and `grpcs://host:port` for gRPC over plaintext and TLS, `thrift://` and `thrifts://` for thrift. Nothing connects until the first call.
@@ -188,6 +188,7 @@ Greeter(url, max_idle=4, max_idle_time=60, max_conns=None, pool_timeout=None, ti
 - `timeout` is the default per call deadline, `connect_timeout` bounds establishing a connection, `compression` is the default request compression.
 - A connection carries one call at a time, so eight concurrent calls need eight connections. After a call the connection goes back to the pool if it is still healthy, up to `max_idle`, and idle connections older than `max_idle_time` seconds are closed. Before an idle connection is reused, anything the server sent in the meantime (GOAWAY, a closed socket) is processed without blocking and a connection that turned out dead is replaced silently.
 - `max_conns` caps how many connections a session may have open at once, `None` means no cap. When they are all busy the next call waits for one to be returned, for at most `pool_timeout` seconds (`None` waits forever, `0` fails immediately), then raises `RpcError` with `Status.RESOURCE_EXHAUSTED`. `max_idle` only decides how many are kept once they fall idle, so `max_conns=8, max_idle=8` serves a burst of eight without reconnecting next time.
+- `max_receive_size` caps one received message in bytes, 4 MiB by default like grpcio, `None` lifts the cap. A larger reply raises `RpcError` with `Status.RESOURCE_EXHAUSTED`. For gRPC the limit also applies after decompression, and the stream is reset as soon as the length prefix is known so the connection is kept. For thrift it applies to the reply frame and the connection is dropped.
 - A connection that fails during a call is dropped, the error is raised and the call is never retried. An error from the server (non OK status) does not count as a failure and keeps the connection.
 - To share one pool between several clients, create the session yourself and pass it instead of a URL. Options are only accepted together with a URL, a shared session is configured when it is created.
 
@@ -223,7 +224,7 @@ Same call options and pooling rules. Concurrent calls each get their own connect
 
 grapec separates two kinds of failures. Mistakes in the calling program raise the built in `TypeError` / `ValueError` family, like the standard library does, and are not meant to be caught: a value of the wrong type raises `grapec.EncodeError`, a class that cannot be a schema raises `grapec.SchemaError` (both `TypeError` subclasses), a call option the protocol has no concept of raises a plain `TypeError`. Failures of the call itself subclass `grapec.GrapecError`:
 
-- `grapec.RpcError`: the server answered with a non OK status. It carries `code` (`grapec.Status`, an `IntEnum` aligned with the gRPC status codes), `message`, `details` (raw bytes), and the response metadata as `headers` and `trailers`. grapec itself uses `Status.DEADLINE_EXCEEDED` for an expired timeout, `Status.RESOURCE_EXHAUSTED` for a `pool_timeout` and `Status.INTERNAL` for a reply it cannot decode.
+- `grapec.RpcError`: the server answered with a non OK status. It carries `code` (`grapec.Status`, an `IntEnum` aligned with the gRPC status codes), `message`, `details` (raw bytes), and the response metadata as `headers` and `trailers`. grapec itself uses `Status.DEADLINE_EXCEEDED` for an expired timeout, `Status.RESOURCE_EXHAUSTED` for a `pool_timeout` or a reply above `max_receive_size`, and `Status.INTERNAL` for a reply it cannot decode.
 - `grapec.TransportError`: the connection itself failed (refused, reset, protocol error). The connection is discarded, the next call opens a new one.
 - `grapec.WireError` and `grapec.ThriftError`: bytes that do not follow the protobuf or thrift encoding. Inside a call they are wrapped in `RpcError` with `Status.INTERNAL`, directly from `from_bytes` they are raised as is.
 

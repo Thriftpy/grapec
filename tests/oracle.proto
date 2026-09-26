@@ -41,3 +41,4 @@ message Everything {
     int64 choice_int = 24;
   }
 }
+

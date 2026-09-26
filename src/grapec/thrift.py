@@ -391,7 +391,6 @@ VERSION_1 = 0x80010000
 _VERSION_MASK = 0xFFFF0000
 _FRAME_LEN = _struct.Struct(">I")
 _U32 = _struct.Struct(">I")
-MAX_FRAME = 64 * 1024 * 1024
 
 # TApplicationException types to grapec status codes
 _APP_EXCEPTION_STATUS = {
@@ -520,8 +519,9 @@ def decode_result(spec: Any, body: bytes) -> Any:
 class ThriftProtocol:
     """Sans-IO client state for one framed thrift connection, one call at a time."""
 
-    def __init__(self, service: str | None = None) -> None:
+    def __init__(self, service: str | None = None, *, max_receive_size: int | None = None) -> None:
         self._service = service  # set for TMultiplexedProtocol, prefixes method names
+        self._max_receive_size = max_receive_size
         self._seqid = 0
         self._inbuf = bytearray()
         self._out = b""
@@ -570,9 +570,11 @@ class ThriftProtocol:
         if len(self._inbuf) < _FRAME_LEN.size:
             return
         length = _FRAME_LEN.unpack_from(self._inbuf)[0]
-        if length > MAX_FRAME:
+        limit = self._max_receive_size
+        if limit is not None and length > limit:
+            # the rest of the frame is still on its way, the connection cannot be reused
             self.dead = True
-            raise TransportError(f"frame of {length} bytes exceeds the {MAX_FRAME} byte limit")
+            raise RpcError(Status.RESOURCE_EXHAUSTED, f"received frame of {length} bytes exceeds max_receive_size ({limit})")
         if len(self._inbuf) < _FRAME_LEN.size + length:
             return
         frame = bytes(self._inbuf[_FRAME_LEN.size : _FRAME_LEN.size + length])

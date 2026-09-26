@@ -44,6 +44,10 @@ class Greeter(grapec.Client, package="test.rpc"):
     @grapec.name("Compressed")
     def compressed(self, request: HelloRequest) -> HelloReply: ...
 
+    @grapec.name("Big")
+    def big(self, request: HelloRequest) -> HelloReply: ...
+
+
 
 @pytest.fixture
 def url(rpc_server):
@@ -589,3 +593,42 @@ def test_explicit_none_timeout_disables_the_default(url):
         g.slow(HelloRequest(name="x"))
     assert g.slow(HelloRequest(name="x"), timeout=None).message == "late"
     grapec.close(g)
+
+
+def test_max_receive_size_resets_the_stream_and_keeps_the_connection(url):
+    greeter = Greeter(url, max_receive_size=1000)
+    with pytest.raises(grapec.RpcError, match="max_receive_size") as info:
+        greeter.big(HelloRequest(name="2000"))
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+    assert len(grapec.session_of(greeter)._pool._idle) == 1
+    assert greeter.big(HelloRequest(name="10")).message == "x" * 10
+    assert len(grapec.session_of(greeter)._pool._idle) == 1
+    grapec.close(greeter)
+
+
+def test_max_receive_size_applies_after_decompression(url):
+    greeter = Greeter(url, max_receive_size=1000)
+    with pytest.raises(grapec.RpcError, match="decompressed") as info:
+        greeter.big(HelloRequest(name="100000", blob=b"gzip"))
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+    assert greeter.big(HelloRequest(name="500", blob=b"gzip")).message == "x" * 500
+    grapec.close(greeter)
+
+
+def test_max_receive_size_defaults_to_4_mib(url):
+    greeter = Greeter(url)
+    assert len(greeter.big(HelloRequest(name=str(3 << 20))).message) == 3 << 20
+    with pytest.raises(grapec.RpcError) as info:
+        greeter.big(HelloRequest(name=str(5 << 20)))
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+    grapec.close(greeter)
+
+    unlimited = Greeter(url, max_receive_size=None)
+    assert len(unlimited.big(HelloRequest(name=str(5 << 20))).message) == 5 << 20
+    grapec.close(unlimited)
+
+
+def test_max_receive_size_is_validated(url):
+    with pytest.raises(ValueError, match="max_receive_size"):
+        grapec.Session(url, max_receive_size=0)
+

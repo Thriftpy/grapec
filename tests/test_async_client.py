@@ -26,6 +26,9 @@ class AsyncGreeter(grapec.AsyncClient, package="test.rpc", name="Greeter"):
     @grapec.name("Compressed")
     async def compressed(self, request: HelloRequest) -> HelloReply: ...
 
+    @grapec.name("Big")
+    async def big(self, request: HelloRequest) -> HelloReply: ...
+
 
 @pytest.fixture
 def url(rpc_server):
@@ -235,3 +238,21 @@ async def test_tls(tls_rpc_server):
     g = AsyncGreeter(f"grpcs://localhost:{port}", connect_timeout=2)
     with pytest.raises(grapec.TransportError):
         await g.say_hello(HelloRequest(name="tls"))
+
+
+async def test_max_receive_size_keeps_the_connection(url):
+    greeter = AsyncGreeter(url, max_receive_size=1000)
+    with pytest.raises(grapec.RpcError) as info:
+        await greeter.big(HelloRequest(name="2000"))
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+    assert (await greeter.big(HelloRequest(name="10"))).message == "x" * 10
+    assert len(grapec.session_of(greeter)._pool._idle) == 1
+    with pytest.raises(grapec.RpcError, match="decompressed"):
+        await greeter.big(HelloRequest(name="100000", blob=b"gzip"))
+    assert (await greeter.big(HelloRequest(name="500", blob=b"gzip"))).message == "x" * 500
+    await grapec.aclose(greeter)
+
+
+async def test_large_response_within_the_default_limit(greeter):
+    assert len((await greeter.big(HelloRequest(name=str(3 << 20)))).message) == 3 << 20
+

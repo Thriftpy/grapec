@@ -14,12 +14,20 @@ _CLOSE_TIMEOUT = 1
 
 
 class AsyncGrpcConnection:
-    def __init__(self, host: str, port: int, *, tls: bool, ssl_context: ssl.SSLContext | None = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        tls: bool,
+        ssl_context: ssl.SSLContext | None = None,
+        max_receive_size: int | None = None,
+    ) -> None:
         self._host = host
         self._port = port
         self._tls = tls
         self._ssl_context = ssl_context
-        self._proto = GrpcProtocol(authority(host, port), tls=tls)
+        self._proto = GrpcProtocol(authority(host, port), tls=tls, max_receive_size=max_receive_size)
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
@@ -119,6 +127,8 @@ class AsyncGrpcConnection:
                     proto.feed(await self._reader.read(_RECV_SIZE))
             return proto.result()
         except RpcError:
+            # an oversized response leaves a RST_STREAM to flush
+            self._write_quietly(proto.data_to_send())
             raise
         except TimeoutError as exc:
             self._write_quietly(proto.cancel())
@@ -155,13 +165,20 @@ class AsyncThriftConnection:
     """One framed thrift connection, the asyncio twin of :class:`AsyncGrpcConnection`."""
 
     def __init__(
-        self, host: str, port: int, *, tls: bool, ssl_context: ssl.SSLContext | None = None, service: str | None = None
+        self,
+        host: str,
+        port: int,
+        *,
+        tls: bool,
+        ssl_context: ssl.SSLContext | None = None,
+        service: str | None = None,
+        max_receive_size: int | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._tls = tls
         self._ssl_context = ssl_context
-        self._proto = ThriftProtocol(service)
+        self._proto = ThriftProtocol(service, max_receive_size=max_receive_size)
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 

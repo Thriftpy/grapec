@@ -57,6 +57,12 @@ def _servicer():
             context.set_compression(grpc.Compression.Gzip)
             return rpc_pb2.HelloReply(message="x" * 10000 + request.name)
 
+        def Big(self, request, context):
+            # a reply of about int(name) bytes, gzip compressed when blob says so
+            if request.blob == b"gzip":
+                context.set_compression(grpc.Compression.Gzip)
+            return rpc_pb2.HelloReply(message="x" * int(request.name))
+
     return Greeter()
 
 

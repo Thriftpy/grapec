@@ -107,6 +107,10 @@ def test_cancel_keeps_the_connection():
     events = server.receive_data(out)
     assert any(isinstance(e, h2.events.StreamReset) and e.stream_id == sid for e in events)
     assert client.healthy and not client.busy
+    # data the server sent before it saw the reset does not eat the connection window
+    window = client._h2._inbound_flow_control_window_manager
+    client.feed(hyperframe.frame.DataFrame(sid, data=b"x" * 16000).serialize())
+    assert window.current_window_size + window._bytes_processed == 4 * 1024 * 1024
     # a late response for the cancelled stream is ignored, the next call works
     sid2 = _start_call(client, server)
     assert sid2 != sid
@@ -135,3 +139,56 @@ def test_frames_split_across_reads():
         client.feed(data[i : i + 1])
     assert client.done
     assert client.result()[0] == b"\x08\x02"
+
+
+def test_oversized_message_resets_the_stream_on_its_length_prefix():
+    client = GrpcProtocol("example:1", tls=False, max_receive_size=100)
+    server = h2.connection.H2Connection(config=h2.config.H2Configuration(client_side=False, header_encoding="utf-8"))
+    server.initiate_connection()
+    server.receive_data(client.data_to_send())
+    client.feed(server.data_to_send())
+    server.receive_data(client.data_to_send())
+    sid = _start_call(client, server)
+    server.send_headers(sid, [(":status", "200"), ("content-type", "application/grpc")])
+    server.send_data(sid, b"\x00" + (1000).to_bytes(4, "big") + b"x" * 10)  # only the prefix has arrived
+    with pytest.raises(grapec.RpcError, match="1000 bytes") as info:
+        client.feed(server.data_to_send())
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+    events = server.receive_data(client.data_to_send())
+    assert any(isinstance(e, h2.events.StreamReset) and e.stream_id == sid for e in events)
+    assert client.healthy and not client.busy
+    # the rest of the reset stream is dropped, the next call works
+    # data already in flight when the reset arrived, h2 on the server would refuse to send it
+    late = hyperframe.frame.DataFrame(sid, data=b"x" * 990)
+    late.flags.add("END_STREAM")
+    client.feed_idle(late.serialize())
+    assert client.healthy
+    # h2 hands its bytes back to the connection window
+    window = client._h2._inbound_flow_control_window_manager
+    assert window.current_window_size + window._bytes_processed == 4 * 1024 * 1024
+    sid2 = _start_call(client, server)
+    _reply(server, sid2)
+    client.feed(server.data_to_send())
+    assert client.result()[0] == b"\x08\x02"
+
+
+def test_body_past_its_length_prefix_is_bounded():
+    client = GrpcProtocol("example:1", tls=False, max_receive_size=100)
+    server = h2.connection.H2Connection(config=h2.config.H2Configuration(client_side=False, header_encoding="utf-8"))
+    server.initiate_connection()
+    server.receive_data(client.data_to_send())
+    client.feed(server.data_to_send())
+    server.receive_data(client.data_to_send())
+    sid = _start_call(client, server)
+    server.send_headers(sid, [(":status", "200"), ("content-type", "application/grpc")])
+    server.send_data(sid, b"\x00\x00\x00\x00\x02" + b"x" * 200)
+    with pytest.raises(grapec.RpcError) as info:
+        client.feed(server.data_to_send())
+    assert info.value.code is grapec.Status.RESOURCE_EXHAUSTED
+
+
+def test_receive_window_is_raised():
+    client, server = _pair()
+    assert server.remote_settings.initial_window_size == 4 * 1024 * 1024
+    sid = _start_call(client, server)
+    assert server.local_flow_control_window(sid) == 4 * 1024 * 1024
