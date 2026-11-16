@@ -78,6 +78,14 @@ async def test_timeout(greeter):
     assert (await greeter.say_hello(HelloRequest(name="after"))).message == "hello after 0"
 
 
+@pytest.mark.parametrize("timeout", [0, -0.5])
+async def test_expired_timeout(greeter, timeout):
+    with pytest.raises(grapec.RpcError) as info:
+        await greeter.say_hello(HelloRequest(name="x"), timeout=timeout)
+    assert info.value.code is grapec.Status.DEADLINE_EXCEEDED
+    assert (await greeter.say_hello(HelloRequest(name="after"))).message == "hello after 0"
+
+
 async def test_compression(greeter):
     reply = await greeter.compressed(HelloRequest(name="z"))
     assert reply.message == "x" * 10000 + "z"
