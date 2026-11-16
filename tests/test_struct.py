@@ -1,3 +1,4 @@
+import dataclasses
 import enum
 import sys
 from datetime import datetime, timedelta, timezone
@@ -107,6 +108,23 @@ def test_encodes_same_bytes_as_protobuf(oracle):
     msg = oracle.Everything()
     msg.ParseFromString(bytes(v))
     assert msg.SerializeToString(deterministic=True) == bytes(v)
+
+
+def test_negative_zero_is_written_like_protobuf(oracle):
+    v = dataclasses.replace(full_value(), f=-0.0)
+    msg = oracle.Everything()
+    msg.ParseFromString(bytes(v))
+    assert msg.SerializeToString(deterministic=True) == bytes(v)
+    assert str(Everything.from_bytes(bytes(v)).f) == "-0.0"
+
+
+def test_default_values_are_type_checked():
+    with pytest.raises(grapec.EncodeError):
+        bytes(Inner(label="a", weight=False))  # type: ignore[arg-type]
+    with pytest.raises(grapec.EncodeError):
+        bytes(Inner(label="a", weight=0.0))  # type: ignore[arg-type]
+    with pytest.raises(grapec.EncodeError):
+        bytes(Inner(label=b"", weight=1))  # type: ignore[arg-type]
 
 
 def test_decodes_protobuf_output(oracle):

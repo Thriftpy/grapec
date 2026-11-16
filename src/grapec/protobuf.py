@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -92,13 +93,24 @@ def _encode_field(out: bytearray, field: FieldSpec, value: Any, *, where: str) -
         _encode_single(out, member.number, member.type, value, where)
         return
 
-    if not field.optional and isinstance(spec, ScalarType) and value == zero_value(spec):
-        # proto3 implicit presence, default values are not written
+    if field.optional or not isinstance(spec, (ScalarType, EnumType)):
+        _encode_single(out, number, spec, value, where)
         return
-    if not field.optional and isinstance(spec, EnumType) and _check_int(value, where) == 0:
-        return
+    # encode first so the value is type checked even when it is the default
+    single = bytearray()
+    _encode_single(single, number, spec, value, where)
+    if not _is_default(spec, value):
+        out += single
 
-    _encode_single(out, number, spec, value, where)
+
+def _is_default(spec: ScalarType | EnumType, value: Any) -> bool:
+    """proto3 implicit presence, default values are not written."""
+    if isinstance(spec, EnumType):
+        return bool(value == 0)
+    if spec.kind == "float":
+        # -0.0 == 0.0, but protobuf writes -0.0
+        return bool(value == 0 and math.copysign(1.0, value) > 0)
+    return bool(value == zero_value(spec))
 
 
 def _encode_packed_item(spec: TypeSpec, value: Any, where: str) -> bytes:
