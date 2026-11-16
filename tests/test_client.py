@@ -451,6 +451,16 @@ def test_stale_connection_after_goaway_is_dropped(serve):
     grapec.close(g)
 
 
+def test_graceful_goaway_lets_the_running_call_finish(serve):
+    # the connection ages out while the 1s call is running, the server finishes it within the grace period
+    url = f"grpc://127.0.0.1:{serve([('grpc.max_connection_age_ms', 300), ('grpc.max_connection_age_grace_ms', 5000)])}"
+    g = Greeter(url)
+    assert g.slow(HelloRequest(name="a")).message == "late"
+    assert len(grapec.session_of(g)._pool) == 0
+    assert g.say_hello(HelloRequest(name="b")).message == "hello b 0"
+    grapec.close(g)
+
+
 def test_max_idle_time_evicts_old_connections(url):
     now = [100.0]
     g = Greeter(url, max_idle_time=30)

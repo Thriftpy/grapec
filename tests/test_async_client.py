@@ -222,6 +222,15 @@ async def test_stale_connection_after_goaway_is_dropped(serve):
     await grapec.aclose(g)
 
 
+async def test_graceful_goaway_lets_the_running_call_finish(serve):
+    url = f"grpc://127.0.0.1:{serve([('grpc.max_connection_age_ms', 300), ('grpc.max_connection_age_grace_ms', 5000)])}"
+    g = AsyncGreeter(url)
+    assert (await g.slow(HelloRequest(name="a"))).message == "late"
+    assert len(grapec.session_of(g)._pool) == 0
+    assert (await g.say_hello(HelloRequest(name="b"))).message == "hello b 0"
+    await grapec.aclose(g)
+
+
 async def test_response_metadata_and_error_metadata(greeter):
     reply, meta = await greeter.say_hello_with_metadata(HelloRequest(name="d"))
     assert reply.message == "hello d 0"
