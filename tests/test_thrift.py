@@ -1,6 +1,7 @@
 """thrift binary codec, checked byte for byte against thriftpy2."""
 
 import enum
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -205,6 +206,17 @@ def test_type_mismatch_is_an_error():
 
     with pytest.raises(grapec.ThriftError, match="does not match"):
         Other.from_bytes(data, codec="thrift")
+
+
+def test_deep_nesting_is_a_thrift_error():
+    @grapec.struct(package="t")
+    class Deep:
+        child: "Deep | None"
+
+    depth = sys.getrecursionlimit()
+    data = b"\x0c\x00\x01" * depth + b"\x00" * (depth + 1)
+    with pytest.raises(grapec.ThriftError, match="nested too deeply"):
+        Deep.from_bytes(data, codec="thrift")
 
 
 def test_truncated_input():

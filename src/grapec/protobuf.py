@@ -190,9 +190,15 @@ def _check_int(value: Any, where: str) -> int:
 # ---------------------------------------------------------------------------
 # decoding
 
+_EPOCH = datetime.fromtimestamp(0, tz=timezone.utc)
+
 
 def decode(cls: type, data: bytes | bytearray | memoryview) -> Any:
-    return _decode_struct(schema_of(cls), bytes(data))
+    schema = schema_of(cls)
+    try:
+        return _decode_struct(schema, bytes(data))
+    except RecursionError:
+        raise w.WireError("message is nested too deeply") from None
 
 
 def _decode_struct(schema: StructSchema, buf: bytes) -> Any:
@@ -297,12 +303,17 @@ def _decode_single(spec: TypeSpec, buf: bytes, pos: int, wire_type: int) -> tupl
         case TimestampType():
             raw, pos = w.decode_bytes(buf, pos)
             seconds, nanos = _decode_seconds_nanos(raw)
-            epoch = datetime.fromtimestamp(0, tz=timezone.utc)
-            return epoch + timedelta(seconds=seconds, microseconds=nanos // 1000), pos
+            try:
+                return _EPOCH + timedelta(seconds=seconds, microseconds=nanos // 1000), pos
+            except OverflowError:
+                raise w.WireError(f"timestamp {seconds}s is out of range") from None
         case DurationType():
             raw, pos = w.decode_bytes(buf, pos)
             seconds, nanos = _decode_seconds_nanos(raw)
-            return timedelta(seconds=seconds, microseconds=nanos // 1000), pos
+            try:
+                return timedelta(seconds=seconds, microseconds=nanos // 1000), pos
+            except OverflowError:
+                raise w.WireError(f"duration {seconds}s is out of range") from None
     raise AssertionError(spec)
 
 

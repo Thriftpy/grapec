@@ -218,7 +218,10 @@ def _encode_binary(out: bytearray, data: bytes) -> None:
 def decode(cls: type, data: bytes | bytearray | memoryview) -> Any:
     schema = schema_of(cls)
     check_schema(schema)
-    value, pos = decode_struct(schema, bytes(data), 0)
+    try:
+        value, pos = decode_struct(schema, bytes(data), 0)
+    except RecursionError:
+        raise ThriftError("struct is nested too deeply") from None
     if pos != len(data):
         raise ThriftError(f"{len(data) - pos} trailing bytes after struct")
     return value
@@ -497,6 +500,8 @@ def decode_result(spec: Any, body: bytes) -> Any:
         values, pos = decode_fields(by_number, body, 0, unknown)
         if pos != len(body):
             raise ThriftError(f"{len(body) - pos} trailing bytes after result")
+    except RecursionError:
+        raise RpcError(Status.INTERNAL, f"malformed reply for {spec.name}: nested too deeply") from None
     except (ThriftError, UnicodeDecodeError) as exc:
         raise RpcError(Status.INTERNAL, f"malformed reply for {spec.name}: {exc}") from exc
     for field in result[1:] if result and result[0].number == 0 else result:

@@ -274,6 +274,33 @@ def test_truncated_input():
         Inner.from_bytes(data[:3])
 
 
+def test_out_of_range_timestamp_and_duration_are_wire_errors():
+    from grapec import wire as w
+
+    @grapec.struct(package="t")
+    class S:
+        ts: datetime | None
+        dur: timedelta | None
+
+    huge = w.encode_bytes(w.encode_tag(1, w.VARINT) + w.encode_varint(10**15))
+    with pytest.raises(grapec.WireError, match="timestamp"):
+        S.from_bytes(w.encode_tag(1, w.LENGTH) + huge)
+    with pytest.raises(grapec.WireError, match="duration"):
+        S.from_bytes(w.encode_tag(2, w.LENGTH) + huge)
+
+
+def test_deep_nesting_is_a_wire_error():
+    @grapec.struct(package="t")
+    class Deep:
+        child: "Deep | None"
+
+    data = b""
+    for _ in range(sys.getrecursionlimit()):
+        data = b"\x0a" + grapec.wire.encode_varint(len(data)) + data
+    with pytest.raises(grapec.WireError, match="nested too deeply"):
+        Deep.from_bytes(data)
+
+
 def test_naive_datetime_uses_local_timezone():
     @grapec.struct(package="t")
     class S:
