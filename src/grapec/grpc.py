@@ -48,6 +48,7 @@ _WINDOW_SIZE = 4 * 1024 * 1024
 IO_ERRORS = (OSError, h2.exceptions.H2Error, EOFError)
 
 _FRAME_HEADER = 9
+_GOAWAY = 0x7
 _CLOSED = h2.connection.ConnectionState.CLOSED
 # transport level trailers that are reported through RpcError / the payload
 _STATUS_KEYS = frozenset({"grpc-status", "grpc-message", "grpc-status-details-bin"})
@@ -91,12 +92,15 @@ class GrpcProtocol:
         self._h2.initiate_connection()
         self._h2.increment_flow_control_window(_WINDOW_SIZE - self._h2.inbound_flow_control_window)
         self.dead = False
+        # a graceful GOAWAY arrived during a call, the call may finish but
+        # the connection must not be reused
+        self.draining = False
         self._call: _Call | None = None
         self._inbuf = bytearray()
 
     @property
     def healthy(self) -> bool:
-        if self.dead:
+        if self.dead or self.draining:
             return False
         return self._h2.state_machine.state is not _CLOSED
 
@@ -162,7 +166,28 @@ class GrpcProtocol:
                 break
             frame = bytes(self._inbuf[:length])
             del self._inbuf[:length]
+            if self._graceful_goaway(frame):
+                continue
             self._feed_frame(frame)
+
+    def _graceful_goaway(self, frame: bytes) -> bool:
+        """Swallow a GOAWAY that still covers the current call.
+
+        h2 rejects every frame after a GOAWAY, but a server shutting down
+        gracefully (``max_connection_age``, ``stop(grace)``) promises to
+        finish streams up to ``last_stream_id``. Such a GOAWAY is kept away
+        from h2 until the call ends, the connection is then dropped.
+        """
+        call = self._call
+        if call is None or call.ended or frame[3] != _GOAWAY or len(frame) < _FRAME_HEADER + 8:
+            return False
+        if int.from_bytes(frame[5:9], "big") & 0x7FFFFFFF != 0:
+            return False  # malformed, a GOAWAY belongs to stream 0, let h2 complain
+        last_stream_id = int.from_bytes(frame[9:13], "big") & 0x7FFFFFFF
+        if last_stream_id < call.stream_id:
+            return False
+        self.draining = True
+        return True
 
     def feed_idle(self, data: bytes) -> None:
         """``feed`` for bytes that arrived while no call was active, never raises."""

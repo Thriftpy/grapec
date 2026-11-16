@@ -38,6 +38,13 @@ def _raw_ping():
     return hyperframe.frame.PingFrame(0, opaque_data=b"12345678").serialize()
 
 
+def _raw_goaway(last_stream_id, code=0):
+    frame = hyperframe.frame.GoAwayFrame(0)
+    frame.last_stream_id = last_stream_id
+    frame.error_code = code
+    return frame.serialize()
+
+
 def _reply(server, stream_id, payload=b"\x00\x00\x00\x00\x02\x08\x02", trailers=(("grpc-status", "0"),)):
     server.send_headers(stream_id, [(":status", "200"), ("content-type", "application/grpc")])
     server.send_data(stream_id, payload)
@@ -83,13 +90,34 @@ def test_goaway_after_complete_response_keeps_the_result():
     assert not client.healthy
 
 
-def test_goaway_during_call_is_a_transport_error():
+def test_goaway_that_drops_the_call_is_a_transport_error():
     client, server = _pair()
     _start_call(client, server)
-    server.close_connection()
+    server.close_connection(last_stream_id=0)
     with pytest.raises(grapec.TransportError, match="connection terminated by peer"):
         client.feed(server.data_to_send())
     assert not client.healthy
+
+
+def test_graceful_goaway_lets_the_call_finish():
+    client, server = _pair()
+    sid = _start_call(client, server)
+    # grpcio first announces the shutdown with the highest stream id, then the real one
+    client.feed(_raw_goaway(2**31 - 1) + _raw_ping() + _raw_goaway(sid))
+    assert not client.healthy and client.busy
+    _reply(server, sid)
+    client.feed(server.data_to_send())
+    assert client.done
+    assert client.result()[0] == b"\x08\x02"
+    assert not client.healthy
+
+
+def test_graceful_goaway_then_eof_is_a_transport_error():
+    client, server = _pair()
+    sid = _start_call(client, server)
+    client.feed(_raw_goaway(sid))
+    with pytest.raises(grapec.TransportError, match="closed by peer"):
+        client.feed(b"")
 
 
 def test_goaway_while_idle_marks_dead_without_raising():
