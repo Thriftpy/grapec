@@ -297,11 +297,16 @@ class _BaseSession:
         if not protocol.metadata and (metadata is not None or compression is not INHERIT):
             raise TypeError(f"metadata and compression are not available with {protocol.name}")
         path, payload = protocol.encode(spec, spec.bind(args, kwargs))
+        if timeout is INHERIT:
+            timeout = self.timeout
+        if timeout is not None and timeout <= 0:
+            # a deadline propagated from a caller can run out before the call starts
+            raise RpcError(Status.DEADLINE_EXCEEDED, "deadline exceeded")
         return (
             spec,
             path,
             payload,
-            self.timeout if timeout is INHERIT else timeout,
+            timeout,
             self.compression if compression is INHERIT else compression,
         )
 

@@ -163,6 +163,14 @@ def test_timeout(greeter):
     assert greeter.say_hello(HelloRequest(name="after")).message == "hello after 0"
 
 
+@pytest.mark.parametrize("timeout", [0, -0.5])
+def test_expired_timeout(greeter, timeout):
+    with pytest.raises(grapec.RpcError) as info:
+        greeter.say_hello(HelloRequest(name="x"), timeout=timeout)
+    assert info.value.code is grapec.Status.DEADLINE_EXCEEDED
+    assert greeter.say_hello(HelloRequest(name="after")).message == "hello after 0"
+
+
 def test_default_timeout(url):
     g = Greeter(url, timeout=0.2)
     with pytest.raises(grapec.RpcError):
