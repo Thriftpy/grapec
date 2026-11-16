@@ -121,6 +121,19 @@ def test_timestamp_formats(text):
     assert S.from_json(json.dumps({"ts": text})).ts == datetime(2021, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
 
 
+def test_timestamp_year_is_zero_padded(oracle):
+    @grapec.struct(package="t")
+    class S:
+        ts: datetime
+
+    v = S(ts=datetime(1, 1, 1, tzinfo=timezone.utc))
+    assert v.to_dict(json_mode=True) == {"ts": "0001-01-01T00:00:00Z"}
+    assert S.from_json(v.to_json()) == v
+    msg = oracle.Everything()
+    msg.ts.FromDatetime(datetime(1, 1, 1))
+    assert json_format.MessageToDict(msg)["ts"] == "0001-01-01T00:00:00Z"
+
+
 def test_json_writes_narrow_ints_as_numbers():
     @grapec.struct(package="t")
     class Widths:

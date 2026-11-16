@@ -126,7 +126,8 @@ def _format_timestamp(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.astimezone()
     value = value.astimezone(timezone.utc)
-    text = value.strftime("%Y-%m-%dT%H:%M:%S")
+    # %Y does not zero pad years below 1000 on every platform
+    text = f"{value.year:04d}-" + value.strftime("%m-%dT%H:%M:%S")
     if value.microsecond:
         frac = f"{value.microsecond:06d}"
         text += "." + (frac[:3] if frac.endswith("000") else frac)
